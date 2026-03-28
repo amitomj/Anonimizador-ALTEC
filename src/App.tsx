@@ -33,7 +33,9 @@ import {
   Scissors,
   Layers,
   FileJson,
-  History
+  History,
+  Link,
+  FolderOpen
 } from 'lucide-react';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
@@ -46,15 +48,16 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLi
 
 interface FileStatus {
   id: string;
-  file: File;
+  file?: File;
   name: string;
   type: string;
   status: 'idle' | 'scanning' | 'reviewing' | 'processing' | 'completed' | 'error';
   error?: string;
   resultBlob?: Blob;
+  size?: number;
 }
 
-function DocumentViewer({ file, onAddPII, customTypes = [] }: { file: File, onAddPII: (text: string, type: string) => void, customTypes?: string[] }) {
+function DocumentViewer({ file, onAddPII, customTypes = [] }: { file?: File, onAddPII: (text: string, type: string) => void, customTypes?: string[] }) {
   const [numPages, setNumPages] = useState<number>(0);
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
@@ -67,7 +70,7 @@ function DocumentViewer({ file, onAddPII, customTypes = [] }: { file: File, onAd
 
   useEffect(() => {
     const loadPdf = async () => {
-      if (file.type === 'application/pdf') {
+      if (file && file.type === 'application/pdf') {
         try {
           const arrayBuffer = await file.arrayBuffer();
           const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
@@ -174,6 +177,16 @@ function DocumentViewer({ file, onAddPII, customTypes = [] }: { file: File, onAd
     }
   };
 
+  if (!file) {
+    return (
+      <div className="bg-white border border-slate-200 rounded-2xl p-8 h-full flex flex-col items-center justify-center text-slate-400">
+        <AlertCircle className="w-12 h-12 mb-4 opacity-20" />
+        <p className="text-sm font-medium">Ficheiro original não carregado.</p>
+        <p className="text-xs mt-1">Carregue o ficheiro para ver a pré-visualização.</p>
+      </div>
+    );
+  }
+
   if (file.type !== 'application/pdf') {
     return (
       <div className="bg-white border border-slate-200 rounded-2xl p-8 h-full flex flex-col items-center justify-center text-slate-400">
@@ -268,28 +281,101 @@ interface GlobalException {
   type: 'JUIZ' | 'AUTOR' | 'OUTRO';
 }
 
+const EntityItem: React.FC<{
+  entity: PIIEntity;
+  toggleSelect: (id: string) => void;
+  toggleEntity: (id: string) => void;
+  openRefineModal: (entity: PIIEntity) => Promise<void>;
+  addToGlobalExceptions: (text: string, type?: 'JUIZ' | 'AUTOR' | 'OUTRO') => void;
+  deleteEntity: (id: string) => void;
+  updateOriginal: (id: string, text: string) => void;
+}> = ({ entity, toggleSelect, toggleEntity, openRefineModal, addToGlobalExceptions, deleteEntity, updateOriginal }) => (
+  <div key={entity.id} className={`p-4 flex items-center gap-3 transition-colors ${entity.ignored ? 'bg-slate-50 opacity-50' : entity.enabled ? 'bg-white' : 'bg-slate-50 opacity-60'}`}>
+    <input 
+      type="checkbox" 
+      checked={entity.selected} 
+      onChange={() => toggleSelect(entity.id)}
+      className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+    />
+    
+    <div className="flex items-center gap-3 flex-1 min-w-0">
+      <button onClick={() => toggleEntity(entity.id)} className={`p-2 rounded-lg transition-colors ${entity.enabled ? 'text-blue-600 bg-blue-50' : 'text-slate-400 bg-slate-200'}`}>
+        {entity.enabled ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+      </button>
+      
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 overflow-hidden">
+          {entity.context && (
+            <span className="text-[9px] font-bold text-slate-400 bg-slate-100 px-1 rounded uppercase tracking-tighter shrink-0" title="Palavra que precede este elemento">
+              {entity.context}
+            </span>
+          )}
+          <p 
+            className="font-mono text-xs text-slate-900 truncate font-bold cursor-pointer hover:text-blue-600"
+            onClick={() => openRefineModal(entity)}
+            title={
+              ['PHONE', 'NIF', 'CC', 'PASSPORT', 'IBAN'].includes(entity.type) && (entity.contextBefore || entity.contextAfter)
+                ? `Contexto: ...${entity.contextBefore?.slice(-50)}${entity.original}${entity.contextAfter?.slice(0, 50)}...`
+                : `Contexto: ${entity.context || 'N/A'}. Clique para refinar seleção`
+            }
+          >
+            {entity.original}
+          </p>
+          {entity.fileIds && entity.fileIds.length > 1 && (
+            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded-md border border-blue-100 shrink-0" title={`Encontrado em ${entity.fileIds.length} ficheiros`}>
+              {entity.fileIds.length} DOCS
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 mt-1">
+          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md border ${
+            entity.type === 'NOME' ? 'bg-blue-50 text-blue-600 border-blue-100' :
+            entity.type === 'LOCAL' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
+            entity.type === 'PHONE' ? 'bg-amber-50 text-amber-600 border-amber-100' :
+            entity.type === 'AUTOR' ? 'bg-purple-50 text-purple-600 border-purple-100' :
+            entity.type === 'JUIZ' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' :
+            'bg-slate-50 text-slate-600 border-slate-100'
+          }`}>
+            {entity.type}
+          </span>
+          {entity.pseudonym && (
+            <span className="text-[10px] font-bold text-blue-700 bg-blue-50/50 px-1.5 py-0.5 rounded border border-blue-100 truncate max-w-[150px]">
+              {entity.pseudonym}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+
+    <div className="flex items-center gap-1">
+      <button 
+        onClick={() => openRefineModal(entity)}
+        className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+        title="Refinar seleção de texto"
+      >
+        <Maximize2 className="w-4 h-4" />
+      </button>
+      <button 
+        onClick={() => addToGlobalExceptions(entity.original, (entity.type === 'JUIZ' || entity.type === 'AUTOR') ? entity.type : 'OUTRO')}
+        className="p-2 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-all"
+        title="Mandar para exceções globais"
+      >
+        <Lock className="w-4 h-4" />
+      </button>
+      <button 
+        onClick={() => deleteEntity(entity.id)}
+        className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+        title="Eliminar permanentemente"
+      >
+        <Trash2 className="w-4 h-4" />
+      </button>
+    </div>
+  </div>
+);
+
 export default function App() {
-  const [files, setFiles] = useState<FileStatus[]>(() => {
-    const saved = localStorage.getItem('filesMetadata');
-    if (!saved) return [];
-    try {
-      const metadata = JSON.parse(saved);
-      // We can't save the actual File or Blob objects in localStorage, 
-      // so we mark them as missing but keep the metadata
-      return metadata.map((f: any) => ({
-        ...f,
-        file: null,
-        resultBlob: null,
-        status: 'pending' // Reset status so they can be re-processed if needed
-      }));
-    } catch (e) {
-      return [];
-    }
-  });
-  const [entities, setEntities] = useState<PIIEntity[]>(() => {
-    const saved = localStorage.getItem('entities');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [files, setFiles] = useState<FileStatus[]>([]);
+  const [entities, setEntities] = useState<PIIEntity[]>([]);
   const [globalExceptions, setGlobalExceptions] = useState<GlobalException[]>(() => {
     const saved = localStorage.getItem('globalExceptions');
     if (!saved) return [];
@@ -312,10 +398,8 @@ export default function App() {
     const saved = localStorage.getItem('customTypes');
     return saved ? JSON.parse(saved) : [];
   });
-  const [step, setStep] = useState<'upload' | 'review' | 'completed'>(() => {
-    const saved = localStorage.getItem('step');
-    return (saved as any) || 'upload';
-  });
+  const [projectType, setProjectType] = useState<'related' | 'unrelated'>('related');
+  const [step, setStep] = useState<'upload' | 'review' | 'completed'>('upload');
   const [isDragging, setIsDragging] = useState(false);
   const [filterType, setFilterType] = useState<string>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
@@ -341,41 +425,24 @@ export default function App() {
     localStorage.setItem('customTypes', JSON.stringify(customTypes));
   }, [customTypes]);
 
-  useEffect(() => {
-    localStorage.setItem('entities', JSON.stringify(entities));
-  }, [entities]);
-
-  useEffect(() => {
-    localStorage.setItem('step', step);
-  }, [step]);
-
-  useEffect(() => {
-    // Only save metadata, not the actual files/blobs
-    const metadata = files.map(f => ({
-      id: f.id,
-      name: f.name,
-      type: f.type,
-      size: f.size
-    }));
-    localStorage.setItem('filesMetadata', JSON.stringify(metadata));
-  }, [files]);
-
   const clearProject = () => {
-    if (confirm('Tem a certeza que deseja limpar todo o projeto atual? Isto removerá todos os ficheiros, entidades identificadas e configurações.')) {
+    if (confirm('Tem a certeza que deseja limpar todo o projeto atual? Isto removerá todos os ficheiros e entidades identificadas.')) {
       setFiles([]);
       setEntities([]);
-      setGlobalExceptions([]);
-      setCustomTypes([]);
       setStep('upload');
       setPreviewFileId(null);
       localStorage.removeItem('filesMetadata');
       localStorage.removeItem('entities');
+      localStorage.removeItem('step');
+    }
+  };
+
+  const clearGlobalExceptions = () => {
+    if (confirm('Tem a certeza que deseja limpar todas as exceções globais, autores e juízes?')) {
+      setGlobalExceptions([]);
+      setCustomTypes([]);
       localStorage.removeItem('globalExceptions');
       localStorage.removeItem('customTypes');
-      localStorage.removeItem('step');
-      localStorage.removeItem('anon_entities');
-      localStorage.removeItem('anon_exceptions');
-      localStorage.removeItem('anon_custom_types');
     }
   };
 
@@ -406,10 +473,100 @@ export default function App() {
     setGlobalExceptions(prev => prev.map(ex => ex.id === id ? { ...ex, type: newType } : ex));
   };
 
-  const clearGlobalExceptions = () => {
-    if (confirm('Tem a certeza que deseja remover TODAS as exceções globais?')) {
-      setGlobalExceptions([]);
-    }
+  const exportGlobalExceptions = () => {
+    const data = { 
+      globalExceptions,
+      customTypes 
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `excecoes_globais_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const importGlobalExceptions = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target?.result as string);
+        if (data.globalExceptions) {
+          setGlobalExceptions(data.globalExceptions);
+        }
+        if (data.customTypes) {
+          setCustomTypes(data.customTypes);
+        }
+        alert('Exceções globais importadas com sucesso!');
+      } catch (e) {
+        alert('Erro ao importar exceções globais. Verifique o ficheiro.');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const exportProject = () => {
+    const data = { 
+      entities: entities.map(e => ({
+        original: e.original,
+        type: e.type,
+        pseudonym: e.pseudonym,
+        enabled: e.enabled,
+        ignored: e.ignored,
+        context: e.context,
+        groupId: e.groupId,
+        treated: e.treated
+      })),
+      projectType,
+      filesMetadata: files.map(f => ({
+        id: f.id,
+        name: f.name,
+        type: f.type,
+        size: f.size
+      }))
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `projeto_anonimizacao_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const importProject = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target?.result as string);
+        if (data.entities) {
+          const newEntities = data.entities.map((ent: any) => ({
+            id: Math.random().toString(36).substring(7),
+            ...ent
+          }));
+          setEntities(newEntities);
+        }
+        if (data.projectType) {
+          setProjectType(data.projectType);
+        }
+        if (data.filesMetadata) {
+          setFiles(data.filesMetadata.map((f: any) => ({
+            ...f,
+            status: 'reviewing'
+          })));
+        }
+        setStep('review');
+        alert('Projeto importado com sucesso! Lembre-se que precisa de carregar os ficheiros originais se quiser gerar as versões anonimizadas.');
+      } catch (e) {
+        alert('Erro ao importar projeto. Verifique o ficheiro.');
+      }
+    };
+    reader.readAsText(file);
   };
 
   const exportProjectProfile = () => {
@@ -565,6 +722,13 @@ export default function App() {
     const words = entity.original.toLowerCase().split(/\s+/).filter(w => w.length > 2);
     const similar = entities.filter(e => {
       if (e.id === entity.id || e.ignored) return false;
+      
+      // If unrelated, only suggest if they share at least one file
+      if (projectType !== 'related') {
+        const commonFiles = entity.fileIds?.filter(fid => e.fileIds?.includes(fid));
+        if (!commonFiles || commonFiles.length === 0) return false;
+      }
+
       const eLower = e.original.toLowerCase();
       const entityLower = entity.original.toLowerCase();
       
@@ -578,7 +742,16 @@ export default function App() {
     });
     setSimilarEntities(similar);
     
-    // Try to find context in the current preview file
+    // Use stored context if available
+    if (entity.contextBefore || entity.contextAfter) {
+      setRefineContext({
+        before: entity.contextBefore || '',
+        after: entity.contextAfter || ''
+      });
+      return;
+    }
+
+    // Fallback: Try to find context in the current preview file
     if (previewFile) {
       try {
         let fullText = "";
@@ -932,6 +1105,19 @@ export default function App() {
     });
   }, [entities, filterType, searchTerm, showTreated]);
 
+  const entitiesByFile = useMemo(() => {
+    if (projectType === 'related') return null;
+    const groups: Record<string, PIIEntity[]> = {};
+    entities.forEach(e => {
+      const fileId = e.fileIds?.[0];
+      if (fileId) {
+        if (!groups[fileId]) groups[fileId] = [];
+        groups[fileId].push(e);
+      }
+    });
+    return groups;
+  }, [entities, projectType]);
+
   const selectedCount = useMemo(() => entities.filter(e => e.selected).length, [entities]);
 
   const mergeSelected = () => {
@@ -1009,18 +1195,34 @@ export default function App() {
   const scanFiles = async (newFiles: File[]) => {
     setStep('review');
     let allEntities: PIIEntity[] = [...entities];
+    let currentFiles = [...files];
 
     for (const file of newFiles) {
-      const id = Math.random().toString(36).substring(7);
+      // Check if this file was already imported via JSON (exists in files but has no File object)
+      const existingFileIndex = currentFiles.findIndex(f => f.name === file.name && !f.file);
+      
+      let id: string;
+      if (existingFileIndex !== -1) {
+        id = currentFiles[existingFileIndex].id;
+        currentFiles[existingFileIndex] = {
+          ...currentFiles[existingFileIndex],
+          file,
+          status: 'scanning'
+        };
+      } else {
+        id = Math.random().toString(36).substring(7);
+        const fileStatus: FileStatus = {
+          id,
+          file,
+          name: file.name,
+          type: file.type || file.name.split('.').pop() || 'unknown',
+          status: 'scanning'
+        };
+        currentFiles.push(fileStatus);
+      }
+      
       if (!previewFileId) setPreviewFileId(id);
-      const fileStatus: FileStatus = {
-        id,
-        file,
-        name: file.name,
-        type: file.type || file.name.split('.').pop() || 'unknown',
-        status: 'scanning'
-      };
-      setFiles(prev => [...prev, fileStatus]);
+      setFiles([...currentFiles]);
 
       try {
         let text = "";
@@ -1053,7 +1255,7 @@ export default function App() {
           }
         }
 
-        const scannedEntities = scanText(text, allEntities, globalExceptions.map(e => e.text), id);
+        const scannedEntities = scanText(text, allEntities, globalExceptions.map(e => e.text), id, projectType === 'related');
         
         // Automatically add auto-detected JUIZ/AUTOR to global exceptions
         const newExceptions = scannedEntities
@@ -1314,31 +1516,6 @@ export default function App() {
 
   // Persistence
   useEffect(() => {
-    const savedEntities = localStorage.getItem('anon_entities');
-    const savedExceptions = localStorage.getItem('anon_exceptions');
-    const savedTypes = localStorage.getItem('anon_custom_types');
-    
-    if (savedEntities) {
-      try {
-        const parsed = JSON.parse(savedEntities);
-        if (Array.isArray(parsed) && parsed.length > 0) setEntities(parsed);
-      } catch (e) { console.error("Error loading entities", e); }
-    }
-    
-    if (savedExceptions) {
-      try {
-        const parsed = JSON.parse(savedExceptions);
-        if (Array.isArray(parsed) && parsed.length > 0) setGlobalExceptions(parsed);
-      } catch (e) { console.error("Error loading exceptions", e); }
-    }
-    
-    if (savedTypes) {
-      try {
-        const parsed = JSON.parse(savedTypes);
-        if (Array.isArray(parsed) && parsed.length > 0) setCustomTypes(parsed);
-      } catch (e) { console.error("Error loading custom types", e); }
-    }
-    
     isInitialMount.current = false;
   }, []);
 
@@ -1391,46 +1568,118 @@ export default function App() {
                 Anonimização Inteligente
               </h2>
               <p className="text-lg text-slate-600 leading-relaxed">
-                Selecione seus documentos para detetar automaticamente dados sensíveis. Você poderá rever e agrupar elementos antes de aplicar a anonimização.
+                Selecione o tipo de projeto para começar a detetar dados sensíveis.
               </p>
-              
-              {files.length > 0 && files.every(f => !f.file) && (
-                <div className="mt-8 p-6 bg-blue-50 border border-blue-100 rounded-2xl flex flex-col items-center gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <div className="flex items-center gap-3 text-blue-700">
-                    <History className="w-6 h-6" />
-                    <p className="font-bold">Sessão Anterior Encontrada</p>
-                  </div>
-                  <p className="text-sm text-blue-600 max-w-md">
-                    Encontrámos um projeto anterior com <strong>{entities.length} entidades</strong> e <strong>{files.length} ficheiros</strong>. 
-                    Para continuar, arraste os mesmos ficheiros abaixo ou clique em "Limpar Projeto" para começar de novo.
-                  </p>
-                  <button 
-                    onClick={clearProject}
-                    className="text-xs font-bold text-blue-700 hover:underline flex items-center gap-1"
-                  >
-                    <Trash2 className="w-3 h-3" /> Limpar Projeto e Começar de Novo
-                  </button>
-                </div>
-              )}
             </div>
 
-            <div 
-              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={onDrop}
-              className={`
-                relative group cursor-pointer border-2 border-dashed rounded-3xl p-16 transition-all duration-300
-                flex flex-col items-center justify-center gap-6
-                ${isDragging ? 'border-blue-500 bg-blue-50/50 scale-[1.01]' : 'border-slate-300 bg-white hover:border-slate-400 hover:bg-slate-50/50'}
-              `}
-            >
-              <input type="file" multiple onChange={onFileSelect} className="absolute inset-0 opacity-0 cursor-pointer" accept=".docx,.xlsx,.xls,.pdf" />
-              <div className={`w-24 h-24 rounded-full flex items-center justify-center transition-transform duration-500 ${isDragging ? 'bg-blue-100 scale-110 rotate-12' : 'bg-slate-100 group-hover:scale-110'}`}>
-                <Upload className={`w-12 h-12 ${isDragging ? 'text-blue-600' : 'text-slate-400'}`} />
+            <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto mb-12">
+              <button 
+                onClick={() => {
+                  setProjectType('related');
+                  const input = document.createElement('input');
+                  input.type = 'file';
+                  input.multiple = true;
+                  input.accept = '.docx,.xlsx,.xls,.pdf';
+                  input.onchange = (e) => {
+                    const files = Array.from((e.target as HTMLInputElement).files || []);
+                    if (files.length > 0) scanFiles(files);
+                  };
+                  input.click();
+                }}
+                className="group p-8 bg-white border-2 border-slate-200 rounded-3xl hover:border-blue-500 hover:bg-blue-50/50 transition-all text-left flex flex-col gap-4"
+              >
+                <div className="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <Link className="w-8 h-8 text-blue-600" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900 mb-2">Documentos Relacionados</h3>
+                  <p className="text-slate-500 text-sm leading-relaxed">
+                    Ideal para processos com vários documentos sobre o mesmo caso. Os elementos são agrupados entre todos os ficheiros.
+                  </p>
+                </div>
+              </button>
+
+              <button 
+                onClick={() => {
+                  setProjectType('unrelated');
+                  const input = document.createElement('input');
+                  input.type = 'file';
+                  input.multiple = true;
+                  input.accept = '.docx,.xlsx,.xls,.pdf';
+                  input.onchange = (e) => {
+                    const files = Array.from((e.target as HTMLInputElement).files || []);
+                    if (files.length > 0) scanFiles(files);
+                  };
+                  input.click();
+                }}
+                className="group p-8 bg-white border-2 border-slate-200 rounded-3xl hover:border-blue-500 hover:bg-blue-50/50 transition-all text-left flex flex-col gap-4"
+              >
+                <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <FileText className="w-8 h-8 text-slate-600" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900 mb-2">Documentos Sem Relação</h3>
+                  <p className="text-slate-500 text-sm leading-relaxed">
+                    Ideal para anonimizar vários documentos independentes ao mesmo tempo. Os agrupamentos são feitos apenas dentro de cada documento.
+                  </p>
+                </div>
+              </button>
+            </div>
+
+            <div className="flex flex-col items-center gap-6">
+              <div className="flex items-center gap-4">
+                <button 
+                  onClick={() => {
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.accept = '.json';
+                    input.onchange = (e) => {
+                      const file = (e.target as HTMLInputElement).files?.[0];
+                      if (file) importProject(file);
+                    };
+                    input.click();
+                  }}
+                  className="px-6 py-3 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 transition-colors flex items-center gap-2 font-bold shadow-sm"
+                >
+                  <FolderOpen className="w-5 h-5" /> Importar Projeto (JSON)
+                </button>
+                <button 
+                  onClick={() => {
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.accept = '.json';
+                    input.onchange = (e) => {
+                      const file = (e.target as HTMLInputElement).files?.[0];
+                      if (file) importGlobalExceptions(file);
+                    };
+                    input.click();
+                  }}
+                  className="px-6 py-3 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 transition-colors flex items-center gap-2 font-bold shadow-sm"
+                >
+                  <Upload className="w-5 h-5" /> Importar Exceções Globais
+                </button>
               </div>
-              <div className="text-center">
-                <p className="text-2xl font-bold text-slate-900 mb-2">Selecione ou arraste ficheiros</p>
-                <p className="text-slate-500">Word, Excel e PDF são processados localmente</p>
+              
+              <div 
+                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDragging(false);
+                  const droppedFiles = Array.from(e.dataTransfer.files) as File[];
+                  if (droppedFiles.length > 0) {
+                    // Default to related if dropped directly
+                    setProjectType('related');
+                    scanFiles(droppedFiles);
+                  }
+                }}
+                className={`
+                  w-full max-w-4xl border-2 border-dashed rounded-3xl p-12 transition-all duration-300
+                  flex flex-col items-center justify-center gap-4
+                  ${isDragging ? 'border-blue-500 bg-blue-50/50 scale-[1.01]' : 'border-slate-300 bg-white hover:border-slate-400 hover:bg-slate-50/50'}
+                `}
+              >
+                <p className="text-slate-500 font-medium">Ou arraste ficheiros aqui para começar (Relacionados)</p>
               </div>
             </div>
           </motion.div>
@@ -1438,6 +1687,34 @@ export default function App() {
 
         {step === 'review' && (
           <div className="flex flex-col gap-8 h-[calc(100vh-160px)]">
+            {files.some(f => !f.file) && (
+              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center justify-between gap-4 shadow-sm">
+                <div className="flex items-center gap-3 text-amber-800">
+                  <div className="bg-amber-100 p-2 rounded-xl">
+                    <AlertCircle className="w-5 h-5 text-amber-600" />
+                  </div>
+                  <div>
+                    <p className="font-bold text-sm">Projeto Importado: Ficheiros em falta</p>
+                    <p className="text-xs text-amber-700">Alguns ficheiros originais não estão carregados. Carregue-os para pré-visualizar e processar.</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => {
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.multiple = true;
+                    input.onchange = (e) => {
+                      const newFiles = Array.from((e.target as HTMLInputElement).files || []);
+                      if (newFiles.length > 0) scanFiles(newFiles);
+                    };
+                    input.click();
+                  }}
+                  className="px-4 py-2 bg-amber-600 text-white rounded-xl text-xs font-bold hover:bg-amber-700 transition-all shadow-sm flex items-center gap-2"
+                >
+                  <Upload className="w-4 h-4" /> Carregar Ficheiros Originais
+                </button>
+              </div>
+            )}
             <div className="grid lg:grid-cols-12 gap-8 flex-1 min-h-0">
               <div className="lg:col-span-5 flex flex-col gap-6 min-h-0">
                 <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm flex flex-col flex-1">
@@ -1472,11 +1749,11 @@ export default function App() {
                           <Plus className="w-4 h-4" /> Adicionar Documentos
                         </button>
                         <button 
-                          onClick={exportProjectProfile}
+                          onClick={exportProject}
                           className="p-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition-colors flex items-center gap-2 text-xs font-bold"
-                          title="Exportar Perfil do Processo (JSON)"
+                          title="Exportar Projeto Completo (JSON)"
                         >
-                          <Download className="w-4 h-4" /> Exportar Perfil
+                          <Download className="w-4 h-4" /> Exportar Projeto
                         </button>
                         <button 
                           onClick={() => {
@@ -1485,14 +1762,14 @@ export default function App() {
                             input.accept = '.json';
                             input.onchange = (e) => {
                               const file = (e.target as HTMLInputElement).files?.[0];
-                              if (file) importProjectProfile(file);
+                              if (file) importProject(file);
                             };
                             input.click();
                           }}
                           className="p-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition-colors flex items-center gap-2 text-xs font-bold"
-                          title="Importar Perfil do Processo (JSON)"
+                          title="Importar Projeto Completo (JSON)"
                         >
-                          <Upload className="w-4 h-4" /> Importar Perfil
+                          <Upload className="w-4 h-4" /> Importar Projeto
                         </button>
                         <button 
                           onClick={clearProject}
@@ -1564,207 +1841,201 @@ export default function App() {
                   </div>
 
                   <div className="divide-y divide-slate-100 overflow-y-auto flex-1">
-                    {groupedEntities.length > 0 && !showTreated && (
-                      <div className="p-4 space-y-4 bg-blue-50/50 border-b border-blue-100">
-                        <div className="flex items-center gap-2 text-blue-700 font-bold text-[10px] uppercase tracking-widest">
-                          <Layers className="w-3.5 h-3.5" />
-                          Grupos de Nomes para Verificação
-                        </div>
-                        {groupedEntities.map(([groupId, members]) => (
-                          <div key={groupId} className="bg-white border border-blue-200 rounded-xl p-4 shadow-sm space-y-3">
-                            <div className="flex items-center justify-between gap-4">
-                              <div className="flex-1">
-                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1 block">Sigla Comum</label>
-                                <input 
-                                  type="text" 
-                                  value={members[0].pseudonym} 
-                                  onChange={(e) => updateGroupPseudonym(groupId, e.target.value)}
-                                  className="w-full bg-blue-50 border-none rounded-lg px-3 py-2 text-sm font-bold text-blue-700 focus:ring-2 focus:ring-blue-500"
-                                />
-                              </div>
-                              <div className="flex items-center gap-2 mt-5">
-                                <button 
-                                  onClick={() => saveGroup(groupId)}
-                                  className="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-700 transition-all flex items-center gap-2"
-                                  title="Validar todos os elementos com a sigla acima"
-                                >
-                                  <Check className="w-4 h-4" /> Validar
-                                </button>
-                                <button 
-                                  onClick={() => disableGroupAnonymization(groupId)}
-                                  className="bg-slate-100 text-slate-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-slate-200 transition-all flex items-center gap-2"
-                                  title="Desativar anonimização para todos os elementos deste grupo"
-                                >
-                                  <EyeOff className="w-4 h-4" /> Ignorar
-                                </button>
-                                <button 
-                                  onClick={() => sendGroupToExceptions(groupId)}
-                                  className="bg-slate-100 text-slate-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-slate-200 transition-all flex items-center gap-2"
-                                  title="Mandar todos os elementos deste grupo para as exceções globais"
-                                >
-                                  <Lock className="w-4 h-4" /> Exceções
-                                </button>
-                                <button 
-                                  onClick={() => deleteGroup(groupId)}
-                                  className="bg-slate-100 text-red-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-red-50 transition-all flex items-center gap-2"
-                                  title="Eliminar todos os elementos deste grupo"
-                                >
-                                  <Trash2 className="w-4 h-4" /> Eliminar
-                                </button>
-                              </div>
+                    {projectType === 'related' ? (
+                      <>
+                        {groupedEntities.length > 0 && !showTreated && (
+                          <div className="p-4 space-y-4 bg-blue-50/50 border-b border-blue-100">
+                            <div className="flex items-center gap-2 text-blue-700 font-bold text-[10px] uppercase tracking-widest">
+                              <Layers className="w-3.5 h-3.5" />
+                              Grupos de Nomes para Verificação
                             </div>
-                            <div className="space-y-2">
-                              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Elementos no Grupo</label>
-                              <div className="flex flex-wrap gap-2">
-                                {members.map(member => (
-                                  <div key={member.id} className="flex items-center gap-2 bg-slate-50 border border-slate-100 rounded-lg pl-2 pr-1 py-1 group focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500">
+                            {groupedEntities.map(([groupId, members]) => (
+                              <div key={groupId} className="bg-white border border-blue-200 rounded-xl p-4 shadow-sm space-y-3">
+                                <div className="flex items-center justify-between gap-4">
+                                  <div className="flex-1">
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1 block">Sigla Comum</label>
                                     <input 
-                                      type="text"
-                                      value={member.original}
-                                      onChange={(e) => updateOriginal(member.id, e.target.value)}
-                                      className="text-xs font-mono font-bold text-slate-700 bg-transparent border-none p-0 focus:ring-0 w-auto min-w-[100px]"
-                                      style={{ width: `${Math.max(member.original.length, 10)}ch` }}
+                                      type="text" 
+                                      value={members[0].pseudonym} 
+                                      onChange={(e) => updateGroupPseudonym(groupId, e.target.value)}
+                                      className="w-full bg-blue-50 border-none rounded-lg px-3 py-2 text-sm font-bold text-blue-700 focus:ring-2 focus:ring-blue-500"
                                     />
-                                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                                      <button 
-                                        onClick={() => toggleEntity(member.id)}
-                                        className={`p-1 rounded-md transition-all ${member.enabled ? 'text-blue-600 hover:bg-blue-50' : 'text-slate-400 hover:bg-slate-200'}`}
-                                        title={member.enabled ? "Desativar anonimização" : "Ativar anonimização"}
-                                      >
-                                        {member.enabled ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                                      </button>
-                                      <button 
-                                        onClick={() => addToGlobalExceptions(member.original, (member.type === 'JUIZ' || member.type === 'AUTOR') ? member.type : 'OUTRO')}
-                                        className="p-1 text-slate-400 hover:text-slate-900 hover:bg-slate-200 rounded-md transition-all"
-                                        title="Mandar para exceções globais"
-                                      >
-                                        <Lock className="w-3.5 h-3.5" />
-                                      </button>
-                                      <button 
-                                        onClick={() => deleteEntity(member.id)}
-                                        className="p-1 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-md transition-all"
-                                        title="Eliminar permanentemente"
-                                      >
-                                        <Trash2 className="w-3.5 h-3.5" />
-                                      </button>
-                                      <button 
-                                        onClick={() => removeFromGroup(member.id)}
-                                        className="p-1 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-md transition-all"
-                                        title="Remover do grupo"
-                                      >
-                                        <X className="w-3.5 h-3.5" />
-                                      </button>
-                                    </div>
                                   </div>
+                                  <div className="flex items-center gap-2 mt-5">
+                                    <button 
+                                      onClick={() => saveGroup(groupId)}
+                                      className="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-700 transition-all flex items-center gap-2"
+                                      title="Validar todos os elementos com a sigla acima"
+                                    >
+                                      <Check className="w-4 h-4" /> Validar
+                                    </button>
+                                    <button 
+                                      onClick={() => disableGroupAnonymization(groupId)}
+                                      className="bg-slate-100 text-slate-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-slate-200 transition-all flex items-center gap-2"
+                                      title="Desativar anonimização para todos os elementos deste grupo"
+                                    >
+                                      <EyeOff className="w-4 h-4" /> Ignorar
+                                    </button>
+                                    <button 
+                                      onClick={() => sendGroupToExceptions(groupId)}
+                                      className="bg-slate-100 text-slate-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-slate-200 transition-all flex items-center gap-2"
+                                      title="Mandar todos os elementos deste grupo para as exceções globais"
+                                    >
+                                      <Lock className="w-4 h-4" /> Exceções
+                                    </button>
+                                    <button 
+                                      onClick={() => deleteGroup(groupId)}
+                                      className="bg-slate-100 text-red-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-red-50 transition-all flex items-center gap-2"
+                                      title="Eliminar todos os elementos deste grupo"
+                                    >
+                                      <Trash2 className="w-4 h-4" /> Eliminar
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className="space-y-2">
+                                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Elementos no Grupo</label>
+                                  <div className="flex flex-wrap gap-2">
+                                    {members.map(member => (
+                                      <div key={member.id} className="flex items-center gap-2 bg-slate-50 border border-slate-100 rounded-lg pl-2 pr-1 py-1 group focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500">
+                                        <input 
+                                          type="text"
+                                          value={member.original}
+                                          onChange={(e) => updateOriginal(member.id, e.target.value)}
+                                          className="text-xs font-mono font-bold text-slate-700 bg-transparent border-none p-0 focus:ring-0 w-auto min-w-[100px]"
+                                          style={{ width: `${Math.max(member.original.length, 10)}ch` }}
+                                        />
+                                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                          <button 
+                                            onClick={() => toggleEntity(member.id)}
+                                            className={`p-1 rounded-md transition-all ${member.enabled ? 'text-blue-600 hover:bg-blue-50' : 'text-slate-400 hover:bg-slate-200'}`}
+                                            title={member.enabled ? "Desativar anonimização" : "Ativar anonimização"}
+                                          >
+                                            {member.enabled ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                                          </button>
+                                          <button 
+                                            onClick={() => addToGlobalExceptions(member.original, (member.type === 'JUIZ' || member.type === 'AUTOR') ? member.type : 'OUTRO')}
+                                            className="p-1 text-slate-400 hover:text-slate-900 hover:bg-slate-200 rounded-md transition-all"
+                                            title="Mandar para exceções globais"
+                                          >
+                                            <Lock className="w-3.5 h-3.5" />
+                                          </button>
+                                          <button 
+                                            onClick={() => deleteEntity(member.id)}
+                                            className="p-1 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-md transition-all"
+                                            title="Eliminar permanentemente"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                          <button 
+                                            onClick={() => removeFromGroup(member.id)}
+                                            className="p-1 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-md transition-all"
+                                            title="Remover do grupo"
+                                          >
+                                            <X className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {filteredEntities.length === 0 && groupedEntities.length === 0 ? (
+                          <div className="p-12 text-center text-slate-400 italic">Nenhum dado sensível detetado.</div>
+                        ) : (
+                          filteredEntities.map((entity) => (
+                            <EntityItem 
+                              key={entity.id} 
+                              entity={entity} 
+                              toggleSelect={toggleSelect}
+                              toggleEntity={toggleEntity}
+                              openRefineModal={openRefineModal}
+                              addToGlobalExceptions={addToGlobalExceptions}
+                              deleteEntity={deleteEntity}
+                              updateOriginal={updateOriginal}
+                            />
+                          ))
+                        )}
+                      </>
+                    ) : (
+                      <div className="space-y-8 p-4">
+                        {files.map(file => {
+                          const fileEntities = entities.filter(e => e.fileIds?.includes(file.id));
+                          const fileFilteredEntities = filteredEntities.filter(e => e.fileIds?.includes(file.id));
+                          const fileGroupedEntities = groupedEntities.filter(([_, members]) => members[0].fileIds?.includes(file.id));
+                          
+                          if (fileEntities.length === 0) return null;
+
+                          return (
+                            <div key={file.id} className="space-y-4">
+                              <div className="flex items-center gap-2 text-slate-900 font-bold text-xs border-b border-slate-100 pb-2">
+                                <FileText className="w-4 h-4 text-blue-600" />
+                                {file.name} ({fileEntities.length})
+                              </div>
+                              
+                              {fileGroupedEntities.length > 0 && !showTreated && (
+                                <div className="space-y-3">
+                                  {fileGroupedEntities.map(([groupId, members]) => (
+                                    <div key={groupId} className="bg-white border border-blue-200 rounded-xl p-4 shadow-sm space-y-3">
+                                      <div className="flex items-center justify-between gap-4">
+                                        <div className="flex-1">
+                                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1 block">Sigla Comum</label>
+                                          <input 
+                                            type="text" 
+                                            value={members[0].pseudonym} 
+                                            onChange={(e) => updateGroupPseudonym(groupId, e.target.value)}
+                                            className="w-full bg-blue-50 border-none rounded-lg px-3 py-2 text-sm font-bold text-blue-700 focus:ring-2 focus:ring-blue-500"
+                                          />
+                                        </div>
+                                        <div className="flex items-center gap-2 mt-5">
+                                          <button onClick={() => saveGroup(groupId)} className="bg-blue-600 text-white px-3 py-2 rounded-lg text-xs font-bold hover:bg-blue-700 transition-all"><Check className="w-4 h-4" /></button>
+                                          <button onClick={() => disableGroupAnonymization(groupId)} className="bg-slate-100 text-slate-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-slate-200 transition-all"><EyeOff className="w-4 h-4" /></button>
+                                          <button onClick={() => sendGroupToExceptions(groupId)} className="bg-slate-100 text-slate-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-slate-200 transition-all"><Lock className="w-4 h-4" /></button>
+                                          <button onClick={() => deleteGroup(groupId)} className="bg-slate-100 text-red-600 px-3 py-2 rounded-lg text-xs font-bold hover:bg-red-50 transition-all"><Trash2 className="w-4 h-4" /></button>
+                                        </div>
+                                      </div>
+                                      <div className="flex flex-wrap gap-2">
+                                        {members.map(member => (
+                                          <div key={member.id} className="flex items-center gap-2 bg-slate-50 border border-slate-100 rounded-lg pl-2 pr-1 py-1 group">
+                                            <input 
+                                              type="text"
+                                              value={member.original}
+                                              onChange={(e) => updateOriginal(member.id, e.target.value)}
+                                              className="text-xs font-mono font-bold text-slate-700 bg-transparent border-none p-0 focus:ring-0 w-auto min-w-[80px]"
+                                              style={{ width: `${Math.max(member.original.length, 8)}ch` }}
+                                            />
+                                            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                              <button onClick={() => toggleEntity(member.id)} className="p-1 text-blue-600 hover:bg-blue-50 rounded-md"><Eye className="w-3.5 h-3.5" /></button>
+                                              <button onClick={() => deleteEntity(member.id)} className="p-1 text-slate-300 hover:text-red-500 rounded-md"><Trash2 className="w-3.5 h-3.5" /></button>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              <div className="space-y-1">
+                                {fileFilteredEntities.map(entity => (
+                                  <EntityItem 
+                                    key={entity.id} 
+                                    entity={entity} 
+                                    toggleSelect={toggleSelect}
+                                    toggleEntity={toggleEntity}
+                                    openRefineModal={openRefineModal}
+                                    addToGlobalExceptions={addToGlobalExceptions}
+                                    deleteEntity={deleteEntity}
+                                    updateOriginal={updateOriginal}
+                                  />
                                 ))}
                               </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
-                    )}
-                    {filteredEntities.length === 0 && groupedEntities.length === 0 ? (
-                      <div className="p-12 text-center text-slate-400 italic">Nenhum dado sensível detetado.</div>
-                    ) : (
-                      filteredEntities.map((entity) => (
-                        <div key={entity.id} className={`p-4 flex items-center gap-3 transition-colors ${entity.ignored ? 'bg-slate-50 opacity-50' : entity.enabled ? 'bg-white' : 'bg-slate-50 opacity-60'}`}>
-                          <input 
-                            type="checkbox" 
-                            checked={entity.selected} 
-                            onChange={() => toggleSelect(entity.id)}
-                            className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                          />
-                          
-                          <div className="flex items-center gap-3 flex-1 min-w-0">
-                            <button onClick={() => toggleEntity(entity.id)} className={`p-2 rounded-lg transition-colors ${entity.enabled ? 'text-blue-600 bg-blue-50' : 'text-slate-400 bg-slate-200'}`}>
-                              {entity.enabled ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-                            </button>
-                            
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 overflow-hidden">
-                                {entity.context && (
-                                  <span className="text-[9px] font-bold text-slate-400 bg-slate-100 px-1 rounded uppercase tracking-tighter shrink-0" title="Palavra que precede este elemento">
-                                    {entity.context}
-                                  </span>
-                                )}
-                                <p 
-                                  className="font-mono text-xs text-slate-900 truncate font-bold cursor-pointer hover:text-blue-600"
-                                  onClick={() => openRefineModal(entity)}
-                                  title={`Contexto: ${entity.context || 'N/A'}. Clique para refinar seleção`}
-                                >
-                                  {entity.original}
-                                </p>
-                                {entity.fileIds && entity.fileIds.length > 1 && (
-                                  <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[9px] font-bold rounded-md border border-blue-100 shrink-0" title={`Encontrado em ${entity.fileIds.length} ficheiros`}>
-                                    {entity.fileIds.length} DOCS
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <select
-                                  value={entity.type}
-                                  onChange={(e) => changeEntityType(entity.id, e.target.value)}
-                                  className="text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-transparent border-none p-0 cursor-pointer hover:text-slate-600 outline-none"
-                                >
-                                  <option value="NOME">NOME</option>
-                                  <option value="LOCAL">LOCAL</option>
-                                  <option value="PHONE">PHONE</option>
-                                  <option value="NIF">NIF</option>
-                                  <option value="CC">CC</option>
-                                  <option value="PASSPORT">PASSPORT</option>
-                                  <option value="AUTOR">AUTOR</option>
-                                  <option value="JUIZ">JUIZ</option>
-                                  {customTypes.map(t => <option key={t} value={t}>{t}</option>)}
-                                </select>
-                                <div 
-                                  className="w-2 h-2 rounded-full" 
-                                  style={{ backgroundColor: PII_COLORS[entity.type]?.hex || PII_COLORS.DEFAULT.hex }} 
-                                />
-                              </div>
-                            </div>
-                            
-                            <ArrowRight className="w-3 h-3 text-slate-300" />
-                            
-                            <div className="flex-1">
-                              <input 
-                                type="text" 
-                                value={entity.pseudonym} 
-                                onChange={(e) => updatePseudonym(entity.id, e.target.value)}
-                                disabled={entity.ignored}
-                                className="w-full bg-slate-100 border-none rounded-lg px-2 py-1 text-xs font-bold text-blue-700 focus:ring-2 focus:ring-blue-500 transition-all disabled:opacity-30"
-                              />
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-1">
-                            <button 
-                              onClick={() => toggleTreated(entity.id)}
-                              className={`p-1.5 rounded-lg transition-all ${entity.treated ? 'text-green-600 bg-green-50' : 'text-slate-300 hover:text-slate-600 hover:bg-slate-100'}`}
-                              title={entity.treated ? "Marcar como não tratado" : "Marcar como tratado"}
-                            >
-                              <CheckCircle2 className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={() => {
-                                if (confirm('Deseja ignorar este elemento?')) {
-                                  setEntities(prev => prev.map(e => e.id === entity.id ? { ...e, ignored: true, treated: true } : e));
-                                }
-                              }}
-                              className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                              title="Ignorar elemento"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={() => addToGlobalExceptions(entity.original, (entity.type === 'JUIZ' || entity.type === 'AUTOR') ? entity.type : 'OUTRO')}
-                              className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-900 transition-colors"
-                              title="Adicionar às Exceções Globais (Cadeado)"
-                            >
-                              <Lock className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      ))
                     )}
                   </div>
                 </div>
@@ -2446,16 +2717,28 @@ export default function App() {
               <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-between items-center">
                 <div className="flex gap-2">
                   <button 
-                    onClick={exportProjectProfile}
+                    onClick={exportGlobalExceptions}
                     className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition-all"
-                    title="Exportar perfil do processo (siglas e exceções)"
+                    title="Exportar exceções globais (JSON)"
                   >
-                    <Download className="w-4 h-4" /> Exportar Perfil
+                    <Download className="w-4 h-4" /> Exportar
                   </button>
-                  <label className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition-all cursor-pointer" title="Importar perfil do processo">
-                    <Upload className="w-4 h-4" /> Importar Perfil
-                    <input type="file" accept=".json" onChange={importProjectProfile} className="hidden" />
-                  </label>
+                  <button 
+                    onClick={() => {
+                      const input = document.createElement('input');
+                      input.type = 'file';
+                      input.accept = '.json';
+                      input.onchange = (e) => {
+                        const file = (e.target as HTMLInputElement).files?.[0];
+                        if (file) importGlobalExceptions(file);
+                      };
+                      input.click();
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition-all"
+                    title="Importar exceções globais (JSON)"
+                  >
+                    <Upload className="w-4 h-4" /> Importar
+                  </button>
                   <button 
                     onClick={clearGlobalExceptions}
                     className="flex items-center gap-2 px-4 py-2 bg-white border border-red-100 rounded-xl text-xs font-bold text-red-600 hover:bg-red-50 transition-all"

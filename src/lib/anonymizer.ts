@@ -14,6 +14,8 @@ export interface PIIEntity {
   groupId?: string;
   fileIds?: string[]; // IDs of files where this entity was found
   context?: string; // Word immediately preceding the entity
+  contextBefore?: string; // Snippet before
+  contextAfter?: string; // Snippet after
 }
 
 export const PII_COLORS: Record<string, { bg: [number, number, number], text: [number, number, number], hex: string }> = {
@@ -137,25 +139,32 @@ export function getNextPseudonym(type: string, entities: PIIEntity[]): string {
   return generatePseudonym(type, maxIndex + 1);
 }
 
-export function scanText(text: string, existingEntities: PIIEntity[] = [], globalExceptions: string[] = [], fileId?: string): PIIEntity[] {
+export function scanText(text: string, existingEntities: PIIEntity[] = [], globalExceptions: string[] = [], fileId?: string, isRelated: boolean = true): PIIEntity[] {
   const entities: PIIEntity[] = [...existingEntities];
-  const foundTexts = new Map<string, PIIEntity>(entities.map(e => [e.original.toLowerCase(), e]));
+  
+  // If unrelated, we only match against entities from the same file (which will be empty for a new file)
+  const relevantEntities = isRelated ? entities : entities.filter(e => fileId && e.fileIds?.includes(fileId));
+  const foundTexts = new Map<string, PIIEntity>(relevantEntities.map(e => [e.original.toLowerCase(), e]));
   const ignoredTexts = new Set([...DEFAULT_GLOBAL_EXCEPTIONS, ...globalExceptions].map(t => t.toLowerCase()));
 
-  const addEntity = (original: string, type: string, context?: string) => {
+  const addEntity = (original: string, type: string, context?: string, contextBefore?: string, contextAfter?: string) => {
     // Trim trailing punctuation (comma, semicolon, period)
     const trimmed = original.replace(/[.,;]+$/, '').trim();
     
     // Check for specific prefixes to ignore numbers (Tel, Fax, Ref, etc.)
-    if (['NIF', 'CC', 'PASSPORT'].includes(type) && context) {
-      const lowerContext = context.toLowerCase();
-      if (lowerContext.includes('tel') || 
-          lowerContext.includes('fax') || 
-          lowerContext.includes('refª') || 
-          lowerContext.includes('referência') ||
-          lowerContext.includes('referencia')) {
-        return;
-      }
+    if (['NIF', 'CC', 'PASSPORT', 'PHONE'].includes(type)) {
+      const lowerContext = (context || '').toLowerCase();
+      const lowerBefore = (contextBefore || '').toLowerCase();
+      const lowerAfter = (contextAfter || '').toLowerCase();
+      
+      const ignoreTerms = ['tel', 'fax', 'refª', 'referência', 'referencia', 'ref', 'telf'];
+      const shouldIgnore = ignoreTerms.some(term => 
+        lowerContext.includes(term) || 
+        lowerBefore.includes(term) || 
+        lowerAfter.includes(term)
+      );
+      
+      if (shouldIgnore) return;
     }
 
     // Minimum length check: 
@@ -189,6 +198,12 @@ export function scanText(text: string, existingEntities: PIIEntity[] = [], globa
       if (fileId && !existing.fileIds?.includes(fileId)) {
         existing.fileIds = [...(existing.fileIds || []), fileId];
       }
+      // Update context if not present (keep first found context)
+      if (!existing.contextBefore) {
+        existing.contextBefore = contextBefore;
+        existing.contextAfter = contextAfter;
+        existing.context = context;
+      }
     } else {
       const pseudonym = getNextPseudonym(finalType, entities);
       const newEntity: PIIEntity = {
@@ -200,7 +215,9 @@ export function scanText(text: string, existingEntities: PIIEntity[] = [], globa
         selected: false,
         ignored: finalType === 'AUTOR' || finalType === 'JUIZ',
         fileIds: fileId ? [fileId] : [],
-        context: context
+        context: context,
+        contextBefore: contextBefore,
+        contextAfter: contextAfter
       };
       entities.push(newEntity);
       foundTexts.set(lower, newEntity);
@@ -217,11 +234,13 @@ export function scanText(text: string, existingEntities: PIIEntity[] = [], globa
       const matchText = match[0];
       
       // Find context (word before)
-      const textBefore = text.substring(Math.max(0, matchIndex - 30), matchIndex);
+      const textBefore = text.substring(Math.max(0, matchIndex - 100), matchIndex);
+      const textAfter = text.substring(matchIndex + matchText.length, Math.min(text.length, matchIndex + matchText.length + 100));
+      
       const wordsBefore = textBefore.trim().split(/\s+/);
       const context = wordsBefore.length > 0 ? wordsBefore[wordsBefore.length - 1] : undefined;
       
-      addEntity(matchText, type as PIIEntity['type'], context);
+      addEntity(matchText, type as PIIEntity['type'], context, textBefore, textAfter);
     }
   });
 
@@ -229,13 +248,28 @@ export function scanText(text: string, existingEntities: PIIEntity[] = [], globa
   const doc = nlp(text);
   
   const people = doc.people().out('array');
-  people.forEach((person: string) => addEntity(person, 'NOME'));
+  people.forEach((person: string) => {
+    const index = text.indexOf(person);
+    const before = index !== -1 ? text.substring(Math.max(0, index - 100), index) : undefined;
+    const after = index !== -1 ? text.substring(index + person.length, Math.min(text.length, index + person.length + 100)) : undefined;
+    addEntity(person, 'NOME', undefined, before, after);
+  });
 
   const places = doc.places().out('array');
-  places.forEach((place: string) => addEntity(place, 'LOCAL'));
+  places.forEach((place: string) => {
+    const index = text.indexOf(place);
+    const before = index !== -1 ? text.substring(Math.max(0, index - 100), index) : undefined;
+    const after = index !== -1 ? text.substring(index + place.length, Math.min(text.length, index + place.length + 100)) : undefined;
+    addEntity(place, 'LOCAL', undefined, before, after);
+  });
 
   const orgs = doc.organizations().out('array');
-  orgs.forEach((org: string) => addEntity(org, 'NOME')); // Treat orgs as names for now
+  orgs.forEach((org: string) => {
+    const index = text.indexOf(org);
+    const before = index !== -1 ? text.substring(Math.max(0, index - 100), index) : undefined;
+    const after = index !== -1 ? text.substring(index + org.length, Math.min(text.length, index + org.length + 100)) : undefined;
+    addEntity(org, 'NOME', undefined, before, after);
+  }); // Treat orgs as names for now
 
   // 3. Portuguese Legal Patterns (Parties)
   const legalPatterns = [
@@ -250,15 +284,19 @@ export function scanText(text: string, existingEntities: PIIEntity[] = [], globa
     let match;
     while ((match = pattern.exec(text)) !== null) {
       if (match[1]) {
-        addEntity(match[1].trim(), 'NOME');
+        const matchText = match[1].trim();
+        const index = match.index + match[0].indexOf(matchText);
+        const before = text.substring(Math.max(0, index - 100), index);
+        const after = text.substring(index + matchText.length, Math.min(text.length, index + matchText.length + 100));
+        addEntity(matchText, 'NOME', undefined, before, after);
       }
     }
   });
 
-  return groupSimilarEntities(entities);
+  return groupSimilarEntities(entities, isRelated);
 }
 
-export function groupSimilarEntities(entities: PIIEntity[]): PIIEntity[] {
+export function groupSimilarEntities(entities: PIIEntity[], isRelated: boolean = true): PIIEntity[] {
   const names = entities.filter(e => e.type === 'NOME' && !e.ignored);
   const groups: PIIEntity[][] = [];
 
@@ -274,6 +312,12 @@ export function groupSimilarEntities(entities: PIIEntity[]): PIIEntity[] {
 
     for (const group of groups) {
       if (group.some(member => {
+        // If unrelated, only group if they belong to the same file
+        if (!isRelated) {
+          const commonFiles = entity.fileIds?.filter(fid => member.fileIds?.includes(fid));
+          if (!commonFiles || commonFiles.length === 0) return false;
+        }
+
         const memberWords = getWords(member.original);
         const commonWords = entityWords.filter(w => memberWords.includes(w));
         return commonWords.length >= 2;
