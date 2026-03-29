@@ -143,8 +143,28 @@ export default function App() {
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
-      const pageText = (textContent.items as any[]).map((item: any) => item.str || '').join(' ');
-      fullText += pageText + '\n';
+      
+      // Sort items by Y descending (top to bottom), then X ascending (left to right)
+      const items = (textContent.items as any[]).sort((a, b) => {
+        const yDiff = b.transform[5] - a.transform[5];
+        if (Math.abs(yDiff) < 5) { // Same line (threshold of 5 points)
+          return a.transform[4] - b.transform[4];
+        }
+        return yDiff;
+      });
+
+      let lastY = -1;
+      let pageText = '';
+      for (const item of items) {
+        if (lastY !== -1 && Math.abs(item.transform[5] - lastY) > 5) {
+          pageText += '\n';
+        } else if (lastY !== -1) {
+          pageText += ' ';
+        }
+        pageText += item.str;
+        lastY = item.transform[5];
+      }
+      fullText += pageText + '\n\n';
     }
     return fullText;
   };
@@ -429,30 +449,103 @@ export default function App() {
   };
 
   const exportAnonymizedPDFBytes = async (fileData: FileData): Promise<Uint8Array> => {
-    const anonymizedText = anonymizeText(fileData.content, entities);
-    const newPdfDoc = await PDFDocument.create();
-    const font = await newPdfDoc.embedFont(StandardFonts.Helvetica);
+    const arrayBuffer = await fileData.rawFile.arrayBuffer();
     
-    const lines = anonymizedText.split('\n');
-    let page = newPdfDoc.addPage();
-    let y = page.getHeight() - 50;
+    // Load with pdfjs for rendering
+    const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
+    const pdf = await loadingTask.promise;
+    
+    // Create new PDF with pdf-lib
+    const outPdfDoc = await PDFDocument.create();
 
-    for (const line of lines) {
-      if (y < 50) {
-        page = newPdfDoc.addPage();
-        y = page.getHeight() - 50;
+    // Filter entities for this file
+    const fileEntities = entities.filter(e => 
+      e.fileIds?.includes(fileData.id) && 
+      e.enabled && 
+      !e.ignored && 
+      e.type !== 'AUTOR' && 
+      e.type !== 'JUIZ'
+    );
+
+    // Sort entities by length descending
+    const sortedEntities = [...fileEntities].sort((a, b) => b.original.length - a.original.length);
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const scale = 2.0; // High resolution for quality
+      const viewport = page.getViewport({ scale });
+      
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d', { alpha: false })!;
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+
+      // Render original page to canvas
+      await page.render({ 
+        canvasContext: context, 
+        viewport: viewport,
+        canvas: canvas
+      }).promise;
+
+      // Get text content to find coordinates for redaction
+      const textContent = await page.getTextContent();
+      
+      // Draw redactions directly on the canvas (this physically overwrites the pixels)
+      for (const item of textContent.items as any[]) {
+        const text = item.str;
+        if (!text.trim() || text.trim().length < 2) continue;
+
+        const matchingEntity = sortedEntities.find(entity => {
+          const original = entity.original;
+          return text.includes(original) || (original.includes(text) && text.trim().length > 3);
+        });
+
+        if (matchingEntity) {
+          // item.transform: [scaleX, skewY, skewX, scaleY, x, y]
+          const [scaleX, , , scaleY, x, y] = item.transform;
+          
+          // Convert PDF points to Canvas pixels
+          // PDF y is from bottom, Canvas y is from top
+          const pHeight = viewport.viewBox[3];
+          const fontSize = Math.abs(scaleY);
+          
+          const cX = x * scale;
+          const cY = (pHeight - y - fontSize) * scale;
+          const cWidth = (item.width || (text.length * fontSize * 0.5)) * scale;
+          const cHeight = fontSize * 1.2 * scale;
+
+          const colorInfo = PII_COLORS[matchingEntity.type] || { hex: '#FFD700', textHex: '#000000' };
+
+          // Draw the redaction box (Solid color)
+          context.fillStyle = colorInfo.hex;
+          context.fillRect(cX, cY, cWidth, cHeight);
+
+          // Draw the pseudonym text
+          if (text.length > 4 || text.trim() === matchingEntity.original) {
+            context.fillStyle = colorInfo.textHex;
+            const drawFontSize = Math.max(10, fontSize * 0.8 * scale);
+            context.font = `bold ${drawFontSize}px Arial, sans-serif`;
+            context.textBaseline = 'middle';
+            context.fillText(matchingEntity.pseudonym, cX + (2 * scale), cY + (cHeight / 2));
+          }
+        }
       }
-      // Clean line from non-printable chars that might break drawText
-      const cleanLine = line.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
-      try {
-        page.drawText(cleanLine, { x: 50, y, size: 10, font });
-      } catch (e) {
-        console.warn("Could not draw line:", cleanLine);
-      }
-      y -= 15;
+
+      // Convert canvas to image and add to new PDF
+      const imageData = canvas.toDataURL('image/jpeg', 0.9);
+      const image = await outPdfDoc.embedJpg(imageData);
+      
+      const outPage = outPdfDoc.addPage([viewport.width / scale, viewport.height / scale]);
+      outPage.drawImage(image, {
+        x: 0,
+        y: 0,
+        width: viewport.width / scale,
+        height: viewport.height / scale,
+      });
     }
 
-    return await newPdfDoc.save();
+    await pdf.destroy();
+    return await outPdfDoc.save();
   };
 
   // --- UI Helpers ---
