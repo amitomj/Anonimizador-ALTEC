@@ -5,7 +5,7 @@ import {
   History, Link, ChevronDown, ChevronRight, Search, Filter,
   MoreVertical, Copy, CheckCircle2, User, MapPin, Phone, 
   CreditCard, Mail, Hash, Briefcase, Scale, Trash, RotateCcw, RotateCw,
-  Shield, Save, FolderOpen
+  Shield, Save, FolderOpen, XCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjs from 'pdfjs-dist';
@@ -22,6 +22,7 @@ import {
   anonymizeText,
   splitEntity,
   getNextPseudonym,
+  cleanName,
   PIIEntity,
   PII_COLORS,
 } from './lib/anonymizer';
@@ -39,6 +40,139 @@ interface FileData {
   status: 'pending' | 'processing' | 'done' | 'error';
 }
 
+const DEFAULT_JUDGES = [
+  "Maria dos Prazeres Couceiro Pizarro Beleza", "Maria Clara Pereira de Sousa de Santiago Sottomayor", "Mário Belo Morgado",
+  "Helena Isabel Gonçalves Moniz Falcão de Oliveira", "Júlio Manuel Vieira Gomes", "Maria da Graça Machado Trigo Franco Frazão",
+  "Maria de Fátima Morais Gomes", "Graça Maria Lima de Figueiredo Amaral", "Maria Olinda da Silva Nunes Garcia",
+  "Catarina Isabel da Silva Santos Serra", "António José dos Santos Oliveira Abreu", "Maria João Romão Carreiro Vaz Tomé",
+  "Nuno António Gonçalves", "Nuno Manuel Pinto Oliveira", "Ricardo Alberto Santos Costa", "Paulo Jorge Fonseca Ferreira da Cunha",
+  "José Maria Ferreira Lopes", "José António Pires Teles Pereira", "João Eduardo Cura Mariano Esteves",
+  "António Fernando Barateiro Dias Martins", "Fernando Baptista de Oliveira", "Luís Filipe Castelo Branco do Espírito Santo",
+  "António Francisco Martins", "Ana Paula da Fonseca Lobo", "Isabel Maria Manso Salgado", "Jorge Manuel Leitão Leal",
+  "Luís Miguel Ferreira de Azevedo Mendes", "José Eduardo Miranda Santos Sapateiro", "Fernando Vaz Ventura",
+  "Emídio Francisco Santos", "Jorge Manuel Baptista Gonçalves", "Nelson Paulo Martins de Borges Carneiro",
+  "Heitor Bernardo Cardoso Vasques Osório", "Celso José das Neves Manata", "Antero Luís", "Maria do Rosário Pita Pegado Gonçalves",
+  "Henrique Ataíde Rosa Antunes", "Maria de Deus Simão da Cruz Silva Damasceno Correia", "António Augusto Manso",
+  "José Alberto Vaz Carreto", "Anabela Figueiredo Luna de Carvalho", "Orlando dos Santos Nascimento",
+  "Cristina Maria Nunes Soares Tavares Coelho", "Carlos Alberto Gameiro de Campos Lobo", "Rui Manuel Duarte Amorim Machado e Moura",
+  "Jorge Manuel Ortins de Simões Raposo", "Maria Margarida Costa Pereira Ramos de Almeida", "Carlos Jorge Ferreira Portela",
+  "Jorge Manuel de Miranda Natividade Jacob", "Arlindo Martins de Oliveira", "António Domingos Pires Robalo",
+  "José Joaquim Aniceto Piedade", "Ernesto de Jesus de Deus Nascimento", "Maria da Graça Martins Pontes dos Santos Silva",
+  "Antero Dinis Ramos Veiga", "Leopoldo Miguel Peres Mansinho Soares", "Adelina da Conceição Cardoso Barradas de Oliveira",
+  "Maria Isoleta de Almeida Costa", "Maria Eduarda de Mira Branquinho Canas Mendes", "Pedro Álvaro de Sousa Donas Botto Fernando",
+  "Maria das Dores Eiró de Araújo", "João Carlos Proença de Oliveira Costa", "Carlos António Paula Moreira",
+  "Olga Maria dos Santos Maurício", "Isabel Maria Brás da Fonseca", "Ana Maria Martins Teixeira",
+  "Maria Luísa de Meireles Carvalho Franco Duarte Ramos", "Eduardo Manuel Baptista Martins Rodrigues Pires", "Mário João Canelas Brás",
+  "Maria Teresa de Sequeira Mendes Pardal", "Joaquim Arménio Correia Gomes", "João Manuel Monteiro Amaro",
+  "Maria José da Costa Machado", "António Paulo Esteves Aguiar de Vasconcelos", "Maria Rosa Papança Barroso",
+  "Joaquim José Felizardo Paiva", "João Manuel Moreira do Carmo", "Carlos Manuel Gonçalves de Melo Marinho",
+  "Márcia Portela", "Manuel Pinto dos Santos", "Nuno Maria Rosa da Silva Garcia", "Anabela Moreira de Sá Cesariny Calafate",
+  "Paula Cristina Passos Barradas Guerreiro", "José Eusébio dos Santos Soeiro de Almeida", "João Carlos da Silva Abrunhosa de Carvalho",
+  "Pedro Maria Godinho Vaz Pato", "Maria Adelaide de Jesus Domingos", "Rui Manuel Barata Penha", "António José Alves Duarte",
+  "Maria Catarina Ramalho Gonçalves", "António Júlio Costa Sobrinho", "Carlos Pereira Gil", "Paulo Alexandre Pereira Guerra",
+  "Luís Filipe Brites Lameiras", "Maria José Pais de Sousa da Costa Pinto", "José Manuel da Silva Castela Rio",
+  "António Manuel Mendes Coelho", "António Carlos Falcão de Beça Pereira", "José da Fonte Ramos", "Francisco José Rodrigues de Matos",
+  "Maria João Fontinha Areias Cardoso", "João Manuel Araújo Ramos Lopes", "Manuela Bento Fialho", "Edgar Gouveia Valente",
+  "Paulo Duarte Barreto Ferreira", "Filipe Manuel Nunes Caroço", "António Manuel Fernandes dos Santos",
+  "Paulo Jorge Tavares Fernandes da Silva", "António José Moreira Ramos", "Alberto Augusto Vicente Ruço",
+  "Pedro Maria Martin Martins", "Ana Paula Pereira de Amorim", "Maria Deolinda Gaudêncio Gomes Dionísio",
+  "Maria Luísa Senra Arantes", "António José da Ascensão Ramos", "Judite Lima de Oliveira Pires", "José Manuel Igreja Martins Matos",
+  "Nuno Miguel Pereira Ribeiro Coelho", "Aristides Manuel da Silva Rodrigues de Almeida", "Manuel António do Carmo Bargado",
+  "Ana Isabel de Azeredo Rodrigues Coelho Fernandes da Silva", "Jorge Manuel da Silva Loureiro", "Edgar Taborda Lopes",
+  "Albertina Maria Gomes Pedroso", "Rui Manuel Correia Moreira", "Jorge Manuel Langweg", "Maria Inês Carvalho Brasil de Moura",
+  "Manuel Domingos Alves Fernandes", "Renato Amorim Damas Barroso", "José Vítor dos Santos Amaral",
+  "Miguel Fernando Baldaia Correia de Morais", "Luís Filipe Dias Cravo", "Paulo Eduardo Cristão Correia",
+  "Alcina Maria Cleto Duarte da Costa Ribeiro", "Alda Maria de Oliveira Martins", "Sérgio Manuel da Silva de Almeida",
+  "Jorge Miguel Pinto de Seabra", "Maria Amália Pereira dos Santos", "Ana Cristina Aparício de Oliveira Duarte",
+  "Francisco João Machado da Cunha Xavier", "Francisca da Mata Mendes", "Luís Antunes Coimbra", "João Diogo de Frias Rodrigues",
+  "Maria José Monteiro Guerra", "Anabela Andrade Miranda", "Francisca Micaela Fonseca da Mota Vieira",
+  "Maria Dolores da Silva e Sousa", "Luís Filipe Pires de Sousa", "Carla Inês Brás Câmara", "José Manuel Costa Galo Tomé de Carvalho",
+  "Manuel Henrique Ramos Soares", "Maria João Vasques de Sousa e Faro", "Helena Isabel Ribeiro Carmelo Dias Bolieiro",
+  "Paulo Fernando Dias da Silva", "Maria José de Almeida Costeira", "Nelson Nunes Fernandes", "João Pedro Nunes Maldonado",
+  "Manuel Alexandre Teixeira Advínculo Sequeira", "José Francisco Mota Ribeiro", "Helena Maria de Carvalho Gomes de Melo",
+  "Mário Jorge dos Santos Branco Coelho", "Isabel Maria Socorro de Matos Peixoto Imaginário", "Higina Maria Almeida Orvalho da Silva Castelo",
+  "João António Peres de Oliveira Coelho", "Vítor Manuel Leitão Ribeiro", "Maria Isabel Sousa Ribeiro Silva",
+  "Raúl Eduardo Nunes Esteves", "Fernando Manuel Matos de Azevedo Correia Chaves", "José Júlio da Cunha Amorim Pinto",
+  "Jorge Manuel Duarte Bispo", "Pedro Miguel Bengala Reis da Cunha Lopes", "Amélia Maria dos Reis Catarino Correia de Almeida",
+  "Maria de Fátima Cardoso Bernardes", "Maria Fernanda Lopes Ventura", "Lina Aurora Ramada e Castro Bettencourt Baptista",
+  "Pedro Alexandre Damião e Cunha", "Maria de Fátima Almeida Andrade", "Alexandra Maria Rolim Mendes",
+  "Ausenda Gonçalves e Alexandre dos Reis", "Maria da Purificação Lopes de Carvalho", "Maria de Fátima Cerveira da Cunha Lopes Furtado",
+  "Elsa de Jesus Coelho Paixão", "Maria dos Prazeres Rodrigues da Silva", "Vera Maria Guedes Barbosa de Sottomayor Bismark do Agro",
+  "Maria João Marques Pinto de Matos", "Rita Maria Pereira Romeira", "Elisabete de Jesus Ribeiro Assunção", "Álvaro Monteiro",
+  "Cláudia Sofia de Jesus Antunes Barata", "José Nuno Ramos Duarte", "Pedro José Esteves de Brito", "Isabel Maria Trocado Monteiro",
+  "António José Barrocal Fialho", "Filipe João Aveiro de Sousa Marques", "Augusta Maria Pinto Ferreira Rodrigues Palma",
+  "Teresa Manuela Pinto da Silva", "Nuno Marcelo de Nóbrega dos Santos de Freitas Araújo", "Maria de Fátima Silva Viegas",
+  "Sónia Maria Fontes de Magalhães de Oliveira Pereira", "Ana Cristina de Jesus Batalha Cardoso", "Carla de Jesus da Costa Fraga Torres",
+  "Fernando Alberto Caetano Besteiro", "Ana Cristina Rodrigues Clemente", "Susana Cristina Mendes Santos Martins da Silveira",
+  "João Simões Presa Grilo de Amaral", "Alexandra Maria Bandeira Ferraz Lage", "João Filipe Pereira Bártolo",
+  "Cristina Isabel Elias Henriques Esteves", "Ana Rute Alves da Costa Pereira", "Ana Lúcia dos Reis Gordinho",
+  "Susana Pinto Santos Silva", "Ana Rita Varela Loja", "Filipe Amadeu César Osório Rodrigues Costa", "Sónia Alexandra Sousa de Moura",
+  "Susana Isabel Santos Pinto de Oliveira Ferrão da Costa Cabral", "Ricardo Manuel Neto Miranda Peixoto", "Rui Miguel Pereira Poças",
+  "Eduardo José Capela de Sousa Paiva", "Maria de Fátima da Rocha Marques Bessa", "Gabriela Lopes Feiteira",
+  "Manuela Maria Marques Trocado", "Fernando Miguel Furtado André Alves", "Ana Paula Soares Ferreira Guedes",
+  "Sara da Piedade Moreira das Neves de Pina Cabral", "Filipe Duarte Freitas Câmara", "Rosa Maria Cardoso Saraiva",
+  "Diogo Coelho de Sousa Leitão", "Rosa dos Remédios Lima Teixeira", "Carlos Alberto Casas Azevedo", "Marlene Fortuna Rodrigues",
+  "Pedro Miguel dos Reis Raposo de Figueiredo", "Estrela Aramita Dias Chambel Capelo de Sousa Chaby Rosa", "Maria Emília Guerreiro de Avillez Melo e Castro"
+];
+
+const DEFAULT_AUTHORS = [
+  "Abrantes Geraldes", "Adriano Vaz Serra", "Alberto dos Reis", "Alberto Xavier", "Albertina Pedroso",
+  "Almeida Costa", "Alexandre de Soveral Martins", "Alexandra Leitão", "Alexandra Rodrigues",
+  "Ana Cristina Rangel", "Ana Neves", "Ana Paula Dourado", "Ana Rita Gil", "Ana Sofia Fonseca",
+  "Anabela Miranda Rodrigues", "André Gonçalves Pereira", "André Lamas Leite", "Anselmo de Castro",
+  "António Caeiro", "António Carlos dos Santos", "António Cândido de Oliveira", "António de Oliveira Ascensão",
+  "António Henriques Gaspar", "António Joaquim Lobo Xavier", "António Menezes Cordeiro",
+  "António Monteiro Fernandes", "António Nunes de Carvalho", "António Pinto Monteiro", "António Santos Justo",
+  "António Vitorino", "Armindo Ribeiro Mendes", "Avelãs Nunes", "Benjamim Silva Rodrigues", "Brandão Proença",
+  "Carlos Adérito Teixeira", "Carlos Alegre", "Carlos Alberto da Mota Pinto", "Carlos Blanco de Morais",
+  "Carlos Ferreira de Almeida", "Carlos Lobo", "Carlos Lopes do Rego", "Carlos Trindade", "Catarina Frade",
+  "Catarina Sarmento e Castro", "Cláudia Cruz Santos", "Cláudia Santos", "Cláudia Viana", "Cláudio de Oliveira",
+  "Cristina Líbano Monteiro", "Cristina Queiroz", "Daniela Paiano", "David Duarte", "Diogo Freitas do Amaral",
+  "Diogo Leite de Campos", "Dulce Lopes", "Dulce M. da Costa", "Eduardo Correia", "Eduardo Paz Ferreira",
+  "Edgar Valles", "Eurico Lopes-Cardoso", "Fausto de Quadros", "Fernando Amâncio Ferreira", "Fernando Araújo",
+  "Fernando Tomé", "Ferrer Correia", "Figueiredo Dias", "Francisco Amaral", "Francisco Lucas Pires",
+  "Francisco Pereira Coutinho", "Francisco Rodrigues Pardal", "Francisco António de M. L. Ferreira de Almeida",
+  "Frederico da Costa Pinto", "Freitas do Amaral", "Germano Marques da Silva", "Gonçalo S. de Melo Bandeira",
+  "Gomes Canotilho", "Guilherme de Oliveira", "Guilherme Dray", "Guilherme Moreira", "Helena Moniz",
+  "Helena Morão", "Helena Morais", "Helena Tomás", "Helena Mota", "Henrique Mesquita", "Isabel Alexandre",
+  "Isabel Celeste Fonseca", "Isabel de Magalhães Colaço", "Isabel Ribeiro", "Isabel Alexandra Ponce de Leão",
+  "João Calvão da Silva", "João Caupers", "João Conde Correia", "João de Matos Antunes Varela",
+  "João Domingos Silva", "João Labareda", "João Leal Amado", "João Rato", "João Rego", "João Salazar",
+  "João Tiago Silveira", "João Vaz Rodrigues", "João Zenha Martins", "Jorge Bacelar Gouveia", "Jorge de Brito",
+  "Jorge de Figueiredo Dias", "Jorge de Seabra", "Jorge Duarte Pinheiro", "Jorge Leite", "Jorge Lobo Xavier",
+  "Jorge Medeiros", "Jorge Miranda", "Jorge Reis Novais", "José Alberto dos Reis", "José António Barreiros",
+  "José Carlos Vieira de Andrade", "José Casalta Nabais", "José Cândido de Pinho", "José Damião da Cunha",
+  "José de Faria Costa", "José de Oliveira Ascensão", "José Eduardo Figueiredo Dias", "José Engrácia Antunes",
+  "José Ferreira Gomes", "José Ferreira Oliveira", "José Gameiro", "José Guilherme Xavier de Basto",
+  "José Joaquim de Sousa", "José José Joaquim Gomes Canotilho", "José Lebre de Freitas", "José Luís da Cruz Vilaça",
+  "José Manuel Damião da Cunha", "José Manuel de Oliveira", "José Manuel Durão Barroso", "José Manuel Pureza",
+  "José Manuel Sérvulo Correia", "José Maria Fernandes Pires", "José Souto de Moura", "José Tavares de Sousa",
+  "Joaquim Freitas da Rocha", "Joaquim Sousa Ribeiro", "Jónatas Machado", "Júlio Gomes", "Laurinda Gemas",
+  "Lebre de Freitas", "Lino Torgal", "Luís A. Carvalho Fernandes", "Luís Cabral de Moncada", "Luís Filipe Pires de Sousa",
+  "Luís Gonçalves da Silva", "Luís Greco", "Luís Menezes Leitão", "Luís S. Cabral de Moncada", "Marcelo Rebelo de Sousa",
+  "M. Maia Gonçalves", "Manuel A. Domingues de Andrade", "Manuel de Andrade", "Manuel da Costa Andrade",
+  "Manuel Simas Santos", "Margarida Reis", "Margarida Silva Pereira", "Maria Benedita Urbano", "Maria Clara Sottomayor",
+  "Maria de Fátima Ribeiro", "Maria do Carmo da Costa", "Maria do Carmo Teles", "Maria do Rosário Palma Ramalho",
+  "Maria João Antunes", "Maria João Mimoso", "Maria João Vaz Tomé", "Maria Lúcia Amaral", "Maria Luísa Duarte",
+  "Maria Luísa Portela de Sousa", "Maria Teresa de Melo Ribeiro", "Mariana Canotilho", "Mário Esteves de Oliveira",
+  "Mário Ferreira Monte", "Mário Júlio de Almeida Costa", "Mário Soares", "Mário Tenreiro", "Miguel Gorjão-Henriques",
+  "Miguel Lucas Pires", "Miguel Mesquita", "Miguel Nogueira de Brito", "Miguel Teixeira de Sousa",
+  "Mónica G. N. Ferreira", "Nuno Brandão", "Nuno Cordeiro", "Nuno Cremona", "Nuno de Salter Cid",
+  "Nuno Ferreira da Cunha", "Nuno Piçarra", "Nuno Sá Gomes", "Olga de Sousa", "Paula Costa e Silva",
+  "Paula Quintas", "Paula Rosado Pereira", "Paulo Câmara", "Paulo da Mota Pinto", "Paulo de Sousa Mendes",
+  "Paulo de Pitta e Cunha", "Paulo Morgado de Carvalho", "Paulo Mota Pinto", "Paulo Otero", "Paulo Olavo Cunha",
+  "Paulo Pimenta", "Paulo Pinto de Albuquerque", "Paulo Pulido Adragão", "Paulo Saragoça da Matta",
+  "Pedro Bacelar de Vasconcelos", "Pedro Caeiro", "Pedro Costa Gonçalves", "Pedro Furtado Martins",
+  "Pedro Gonçalves", "Pedro Maia", "Pedro Madeira de Brito", "Pedro Martínez", "Pedro Pais de Vasconcelos",
+  "Pedro Romano Martinez", "Rita Garcia Pereira", "Rita Lobo Xavier", "Rita Nóbrega", "Ricardo Jorge Bragança de Matos",
+  "Rui Assis", "Rui de Alarcão", "Rui Medeiros", "Rui Morais", "Rui Pereira", "Rui Pinto", "Rui Pinto Duarte",
+  "Rui M. de Medeiros", "Salvador da Costa", "Saldanha Sanches", "Sandra Barreira", "Sérgio Poças",
+  "Sérvulo Correia", "Sinde Monteiro", "Susana Aires de Sousa", "Susana Tavares da Silva", "Suzana Tavares da Silva",
+  "Teles de Menezes Leitão", "Teresa Arruda Alvim", "Teresa Coelho Moreira", "Teresa Pizarro Beleza",
+  "Teresa Violante", "Tiago Caiado Milheiro", "Tiago Duarte", "Tiago Serrão", "Varela de Matos",
+  "Vasco Costa", "Vasco Pereira da Silva", "Vieira de Andrade", "Vítor Gomes", "Vítor Ferreira", "Vital Moreira"
+];
+
 export default function App() {
   const [files, setFiles] = useState<FileData[]>([]);
   const [entities, setEntities] = useState<PIIEntity[]>([]);
@@ -52,6 +186,19 @@ export default function App() {
   const [showMergeModal, setShowMergeModal] = useState(false);
   const [showExceptionsModal, setShowExceptionsModal] = useState(false);
   const [exceptionsTab, setExceptionsTab] = useState<'EXCECAO' | 'JUIZ' | 'AUTOR'>('EXCECAO');
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  // Auto-hide toast
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToast({ message, type });
+  };
   const [isRelated, setIsRelated] = useState(true);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [globalKnowledge, setGlobalKnowledge] = useState<Record<string, string>>(() => {
@@ -210,13 +357,16 @@ export default function App() {
       const textContent = await page.getTextContent();
       
       // Sort items by Y descending (top to bottom), then X ascending (left to right)
-      const items = (textContent.items as any[]).sort((a, b) => {
-        const yDiff = b.transform[5] - a.transform[5];
-        if (Math.abs(yDiff) < 5) { // Same line (threshold of 5 points)
-          return a.transform[4] - b.transform[4];
-        }
-        return yDiff;
-      });
+      // Filter only items that have text (str property)
+      const items = (textContent.items as any[])
+        .filter(item => typeof item.str === 'string')
+        .sort((a, b) => {
+          const yDiff = b.transform[5] - a.transform[5];
+          if (Math.abs(yDiff) < 5) { // Same line (threshold of 5 points)
+            return a.transform[4] - b.transform[4];
+          }
+          return yDiff;
+        });
 
       let lastY = -1;
       let pageText = '';
@@ -451,7 +601,224 @@ export default function App() {
 
   const addToGlobalKnowledge = (text: string, type: string = 'EXCECAO') => {
     setGlobalKnowledge(prev => ({ ...prev, [text.toLowerCase().trim()]: type }));
-    setEntities(prev => prev.filter(e => e.original !== text));
+    // Only remove from entities if it's a generic exception, not a judge/author
+    if (type === 'EXCECAO') {
+      setEntities(prev => prev.filter(e => e.original.toLowerCase() !== text.toLowerCase()));
+    } else {
+      // For judges/authors, update their type in the current list
+      setEntities(prev => prev.map(e => 
+        e.original.toLowerCase() === text.toLowerCase() ? { ...e, type, treated: true } : e
+      ));
+    }
+  };
+
+  const handleImportJudges = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    
+    setIsProcessing(true);
+    try {
+      let text = '';
+      if (file.type === 'application/pdf') {
+        text = await extractTextFromPDF(file);
+      } else {
+        text = await file.text();
+      }
+      
+      if (!text || text.trim().length === 0) {
+        showToast("Não foi possível extrair texto do ficheiro. Verifique se o PDF contém texto pesquisável.", "error");
+        return;
+      }
+
+      // Split by lines and filter
+      // Use a more flexible split to catch names separated by various delimiters
+      const rawLines = text.split(/[\n\r,;|\t]+/).map(l => l.trim()).filter(l => l.length > 3);
+      const newJudges: Record<string, string> = {};
+      let count = 0;
+      
+      rawLines.forEach(line => {
+        const cleaned = cleanName(line);
+        // Basic validation: at least two words and minimum length
+        if (cleaned.length >= 3 && cleaned.split(/\s+/).length >= 2) {
+          newJudges[cleaned.toLowerCase()] = 'JUIZ';
+          count++;
+        }
+      });
+      
+      if (count === 0) {
+        showToast("Nenhum nome de juiz válido foi encontrado no ficheiro. Certifique-se de que os nomes estão completos.", "error");
+      } else {
+        setGlobalKnowledge(prev => {
+          const next = { ...prev };
+          // The user mentioned "limpa os nomes... que tenho na lista atual" for authors, 
+          // but for judges they said "quero que a troques pela que está no documento".
+          // So for both, we should probably clear the existing ones of that type.
+          Object.keys(next).forEach(key => {
+            if (next[key] === 'JUIZ') delete next[key];
+          });
+          return { ...next, ...newJudges };
+        });
+        showToast(`${count} juízes importados e lista atualizada.`, "success");
+      }
+    } catch (err) {
+      console.error("Erro ao importar juízes:", err);
+      showToast("Erro ao processar o ficheiro de juízes.", "error");
+    } finally {
+      setIsProcessing(false);
+      event.target.value = '';
+    }
+  };
+
+  const handleImportAuthors = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    
+    setIsProcessing(true);
+    try {
+      let text = '';
+      if (file.type === 'application/pdf') {
+        text = await extractTextFromPDF(file);
+      } else {
+        text = await file.text();
+      }
+      
+      if (!text || text.trim().length === 0) {
+        showToast("Não foi possível extrair texto do ficheiro. Verifique se o PDF contém texto pesquisável.", "error");
+        return;
+      }
+
+      const rawLines = text.split(/[\n\r,;|\t]+/).map(l => l.trim()).filter(l => l.length > 3);
+      const newAuthors: Record<string, string> = {};
+      let count = 0;
+      
+      rawLines.forEach(line => {
+        const cleaned = cleanName(line);
+        if (cleaned.length >= 3 && cleaned.split(/\s+/).length >= 2) {
+          newAuthors[cleaned.toLowerCase()] = 'AUTOR';
+          count++;
+        }
+      });
+      
+      if (count === 0) {
+        showToast("Nenhum nome de autor válido foi encontrado no ficheiro.", "error");
+      } else {
+        setGlobalKnowledge(prev => {
+          const next = { ...prev };
+          // User specifically asked to clear existing authors: "limpa os nomes de autores que tenho na lista atual"
+          Object.keys(next).forEach(key => {
+            if (next[key] === 'AUTOR') delete next[key];
+          });
+          return { ...next, ...newAuthors };
+        });
+        showToast(`${count} autores importados e lista atualizada.`, "success");
+      }
+    } catch (err) {
+      console.error("Erro ao importar autores:", err);
+      showToast("Erro ao processar o ficheiro de autores.", "error");
+    } finally {
+      setIsProcessing(false);
+      event.target.value = '';
+    }
+  };
+
+  const handleLoadDefaultAuthors = () => {
+    setGlobalKnowledge(prev => {
+      const next = { ...prev };
+      // Clear existing authors
+      Object.keys(next).forEach(key => {
+        if (next[key] === 'AUTOR') delete next[key];
+      });
+      // Add default authors
+      DEFAULT_AUTHORS.forEach(name => {
+        next[name.toLowerCase()] = 'AUTOR';
+      });
+      return next;
+    });
+    showToast(`${DEFAULT_AUTHORS.length} autores carregados com sucesso.`, "success");
+  };
+
+  const handleLoadDefaultJudges = () => {
+    setGlobalKnowledge(prev => {
+      const next = { ...prev };
+      // Clear existing judges
+      Object.keys(next).forEach(key => {
+        if (next[key] === 'JUIZ') delete next[key];
+      });
+      // Add default judges
+      DEFAULT_JUDGES.forEach(name => {
+        next[name.toLowerCase()] = 'JUIZ';
+      });
+      return next;
+    });
+    showToast(`${DEFAULT_JUDGES.length} juízes carregados com sucesso.`, "success");
+  };
+
+  const handleClearGlobalKnowledge = (type: string) => {
+    setGlobalKnowledge(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(key => {
+        if (next[key] === type) delete next[key];
+      });
+      return next;
+    });
+    const typeName = type === 'EXCECAO' ? 'exceções' : type === 'JUIZ' ? 'juízes' : 'autores';
+    showToast(`Lista de ${typeName} limpa com sucesso.`, "info");
+  };
+
+  const handleClearAllGlobalKnowledge = () => {
+    setGlobalKnowledge({});
+    showToast("Todo o conhecimento global foi limpo.", "info");
+  };
+
+  const handleSuggestGroups = () => {
+    // More aggressive grouping for names
+    setEntities(prev => {
+      const next = [...prev];
+      const nameEntities = next.filter(e => e.type === 'NOME' || e.type === 'JUIZ' || e.type === 'AUTOR');
+      
+      nameEntities.forEach(entity => {
+        if (entity.groupId) return;
+        
+        const words = entity.original.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+        if (words.length < 2) return;
+
+        const match = nameEntities.find(other => {
+          if (other.id === entity.id) return false;
+          const otherWords = other.original.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+          if (otherWords.length < 2) return false;
+          
+          // Match if first name + any other name matches
+          if (words[0] === otherWords[0]) {
+            const otherMatch = words.slice(1).some(w => otherWords.slice(1).includes(w));
+            if (otherMatch) return true;
+          }
+          
+          // Or if they share at least 2 significant words
+          const common = words.filter(w => otherWords.includes(w));
+          return common.length >= 2;
+        });
+
+        if (match) {
+          const groupId = match.groupId || `suggested-${entity.id}`;
+          entity.groupId = groupId;
+          match.groupId = groupId;
+          
+          // Sync type if one is JUIZ or AUTOR
+          if (match.type === 'JUIZ' || entity.type === 'JUIZ') {
+            entity.type = 'JUIZ';
+            match.type = 'JUIZ';
+          } else if (match.type === 'AUTOR' || entity.type === 'AUTOR') {
+            entity.type = 'AUTOR';
+            match.type = 'AUTOR';
+          }
+          
+          // Sync pseudonyms
+          entity.pseudonym = match.pseudonym;
+        }
+      });
+      
+      return next;
+    });
   };
 
   const handleExpandStart = () => {
@@ -1031,6 +1398,14 @@ export default function App() {
                   </button>
                 </div>
                 <button 
+                  onClick={handleSuggestGroups}
+                  className="flex items-center gap-2 px-4 py-2 bg-amber-50 text-amber-700 rounded-xl text-sm font-bold hover:bg-amber-100 transition-colors"
+                  title="Sugerir agrupamentos automáticos para nomes semelhantes"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Sugerir Grupos</span>
+                </button>
+                <button 
                   onClick={handleReGroup}
                   className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-sm font-bold hover:bg-indigo-100 transition-colors"
                   title="Re-analisar agrupamentos com base no tratamento atual"
@@ -1379,6 +1754,27 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, y: 50, x: '-50%' }}
+            className={`fixed bottom-24 left-1/2 z-[100] px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border ${
+              toast.type === 'success' ? 'bg-green-50 border-green-100 text-green-800' :
+              toast.type === 'error' ? 'bg-red-50 border-red-100 text-red-800' :
+              'bg-indigo-50 border-indigo-100 text-indigo-800'
+            }`}
+          >
+            {toast.type === 'success' ? <CheckCircle2 className="w-5 h-5 text-green-600" /> :
+             toast.type === 'error' ? <AlertCircle className="w-5 h-5 text-red-600" /> :
+             <Shield className="w-5 h-5 text-indigo-600" />}
+            <span className="font-bold text-sm">{toast.message}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Merge Modal */}
       <AnimatePresence>
         {showMergeModal && (
@@ -1495,6 +1891,63 @@ export default function App() {
               </div>
               
               <div className="p-6 overflow-y-auto flex-1">
+                <div className="flex justify-between items-center mb-4">
+                  <div className="flex items-center gap-4">
+                    <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                      {Object.entries(globalKnowledge).filter(([_, type]) => type === exceptionsTab).length} Elementos
+                    </span>
+                    {exceptionsTab === 'JUIZ' && (
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={handleLoadDefaultJudges}
+                          className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 transition-colors bg-indigo-50 px-2 py-1 rounded"
+                          title="Carregar lista de juízes padrão do sistema"
+                        >
+                          <FileText className="w-3 h-3" />
+                          Carregar Lista Padrão
+                        </button>
+                        <label className="cursor-pointer text-xs font-bold text-gray-500 hover:text-gray-700 flex items-center gap-1 transition-colors bg-gray-50 px-2 py-1 rounded" title="Importar novo ficheiro PDF/TXT de juízes">
+                          <Upload className="w-3 h-3" />
+                          <span>Importar Novo (PDF/TXT)</span>
+                          <input type="file" accept=".pdf,.txt" className="hidden" onChange={handleImportJudges} />
+                        </label>
+                      </div>
+                    )}
+                    {exceptionsTab === 'AUTOR' && (
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={handleLoadDefaultAuthors}
+                          className="text-xs font-bold text-orange-600 hover:text-orange-800 flex items-center gap-1 transition-colors bg-orange-50 px-2 py-1 rounded"
+                          title="Carregar lista de autores padrão do sistema"
+                        >
+                          <FileText className="w-3 h-3" />
+                          Carregar Lista Padrão
+                        </button>
+                        <label className="cursor-pointer text-xs font-bold text-gray-500 hover:text-gray-700 flex items-center gap-1 transition-colors bg-gray-50 px-2 py-1 rounded" title="Importar novo ficheiro PDF/TXT de autores">
+                          <Upload className="w-3 h-3" />
+                          <span>Importar Novo (PDF/TXT)</span>
+                          <input type="file" accept=".pdf,.txt" className="hidden" onChange={handleImportAuthors} />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <button 
+                      onClick={() => handleClearGlobalKnowledge(exceptionsTab)}
+                      className="text-xs font-bold text-red-500 hover:text-red-700 flex items-center gap-1 transition-colors"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      Limpar {exceptionsTab === 'EXCECAO' ? 'Exceções' : exceptionsTab === 'JUIZ' ? 'Juízes' : 'Autores'}
+                    </button>
+                    <button 
+                      onClick={handleClearAllGlobalKnowledge}
+                      className="text-xs font-bold text-red-700 hover:text-red-900 flex items-center gap-1 transition-colors border-l pl-4 border-gray-200"
+                    >
+                      <XCircle className="w-3 h-3" />
+                      Limpar Tudo
+                    </button>
+                  </div>
+                </div>
                 {Object.entries(globalKnowledge).filter(([_, type]) => type === exceptionsTab).length === 0 ? (
                   <div className="text-center py-12 text-gray-400">
                     <Shield className="w-12 h-12 mx-auto mb-4 opacity-20" />

@@ -100,17 +100,16 @@ const PII_PATTERNS = {
 
 const NAME_TITLES = [
   'Colega', 'Autor', 'Autora', 'Réu', 'Ré', 'Mandatário', 'Advogado', 'Advogada', 
-  'Dr.', 'Dra.', 'Sr.', 'Sra.', 'Eng.', 'Prof.', 'Juiz', 'Desembargador', 'Relator', 
-  'Relatora', 'Venerando', 'Tribunal', 'Relação', 'Lisboa', 'Porto', 'Coimbra', 
-  'Évora', 'Guimarães', 'Cfr.', 'In', 'Págs.', 'Pág.', 'Artigo', 'Art.', 'N.º', 
-  'Processo', 'Proc.', 'Data', 'Hora', 'Local', 'Sede', 'Empresa', 'Sociedade'
+  'Dr\\.', 'Dra\\.', 'Sr\\.', 'Sra\\.', 'Eng\\.', 'Prof\\.', 'Juiz', 'Desembargador', 'Relator', 
+  'Relatora', 'Venerando', 'Tribunal', 'Relação', 'Cfr\\.', 'In', 'Págs\\.', 'Pág\\.', 'Artigo', 'Art\\.', 'N\\.º', 
+  'Processo', 'Proc\\.', 'Data', 'Hora', 'Local', 'Sede', 'Empresa', 'Sociedade'
 ];
 
 const NAME_CLEAN_REGEX = new RegExp(`^\\s*(?:${NAME_TITLES.join('|')})\\s+|\\s+(?:${NAME_TITLES.join('|')})\\s*$`, 'gi');
 const CONJUNCTION_CLEAN_REGEX = /^\s*(?:e|ou|com|contra)\s+|\s+(?:e|ou|com|contra)\s*$/gi;
 const PUNCTUATION_CLEAN_REGEX = /^[.,;:\-\s]+|[.,;:\-\s]+$/g;
 
-function cleanName(name: string): string {
+export function cleanName(name: string): string {
   let cleaned = name.trim();
   
   // Repeatedly clean until no more changes (to handle "Colega Dr. António")
@@ -286,10 +285,43 @@ export function scanText(text: string, fileId: string, existingEntities: PIIEnti
     if (DEFAULT_GLOBAL_EXCEPTIONS.some(ex => ex.toLowerCase() === lower)) return;
     if (ENTITY_BLACKLIST.includes(trimmed.toUpperCase())) return;
 
+    // Advanced Judge Identification based on globalKnowledge
+    let identifiedType = finalType;
+    const judges = Object.entries(globalKnowledge).filter(([_, t]) => t === 'JUIZ').map(([n]) => n.toLowerCase());
+    const authors = Object.entries(globalKnowledge).filter(([_, t]) => t === 'AUTOR').map(([n]) => n.toLowerCase());
+    const nameWords = lower.split(/\s+/).filter(w => w.length > 2);
+
+    if (identifiedType !== 'JUIZ' && identifiedType !== 'AUTOR' && nameWords.length >= 2) {
+      // Rule: Identify as JUIZ if matches a judge (first name + one more)
+      const isJudgeMatch = judges.some(judgeName => {
+        const judgeWords = judgeName.split(/\s+/).filter(w => w.length > 2);
+        if (judgeWords.length < 2) return false;
+        if (nameWords[0] !== judgeWords[0]) return false;
+        return nameWords.slice(1).some(w => judgeWords.slice(1).includes(w));
+      });
+
+      if (isJudgeMatch) {
+        // The user specifically asked to identify as AUTOR if it matches a judge's first name + one more
+        identifiedType = 'AUTOR';
+      } else {
+        // Rule: Identify as AUTOR if matches an author (first name + one more)
+        const isAuthorMatch = authors.some(authorName => {
+          const authorWords = authorName.split(/\s+/).filter(w => w.length > 2);
+          if (authorWords.length < 2) return false;
+          if (nameWords[0] !== authorWords[0]) return false;
+          return nameWords.slice(1).some(w => authorWords.slice(1).includes(w));
+        });
+
+        if (isAuthorMatch) {
+          identifiedType = 'AUTOR';
+        }
+      }
+    }
+
     // Check if exists in existing entities (for grouping)
     const existing = existingEntities.find(e => 
       e.original.toLowerCase() === lower && 
-      e.type === finalType &&
+      e.type === identifiedType &&
       (isRelated || e.fileIds?.includes(fileId))
     );
 
@@ -310,12 +342,12 @@ export function scanText(text: string, fileId: string, existingEntities: PIIEnti
     const contextSnippet = `${contextWordsBefore} ${trimmed} ${contextWordsAfter}`.trim();
 
     const id = Math.random().toString(36).substring(7);
-    const pseudonym = getNextPseudonym(finalType, [...existingEntities, ...entities]);
+    const pseudonym = getNextPseudonym(identifiedType, [...existingEntities, ...entities]);
     
     entities.push({
       id,
       original: trimmed,
-      type: finalType,
+      type: identifiedType,
       pseudonym,
       enabled: true,
       fileIds: [fileId],
@@ -384,7 +416,7 @@ export function groupSimilarEntities(entities: PIIEntity[], isRelated: boolean =
   });
 
   // 2. Special handling for NAMES (partial matches and shared words)
-  const nameEntities = newEntities.filter(e => e.type === 'NOME');
+  const nameEntities = newEntities.filter(e => e.type === 'NOME' || e.type === 'JUIZ' || e.type === 'AUTOR');
   
   // Helper to get significant words (length > 2)
   const getWords = (text: string) => 
@@ -394,13 +426,22 @@ export function groupSimilarEntities(entities: PIIEntity[], isRelated: boolean =
     const words = getWords(entity.original);
     if (words.length < 2) return;
 
-    // Find other names that share at least 2 words
+    // Find other names that share at least 2 words or follow the judge matching rule
     const match = nameEntities.find(other => {
       if (other.id === entity.id) return false;
       // If not related, only match within the same file
       if (!isRelated && other.fileIds?.[0] !== entity.fileIds?.[0]) return false;
       
       const otherWords = getWords(other.original);
+      
+      // If both are judges, or one is a judge/author and they share first name + one more
+      if ((entity.type === 'JUIZ' || other.type === 'JUIZ' || entity.type === 'AUTOR' || other.type === 'AUTOR') && words.length >= 2 && otherWords.length >= 2) {
+        if (words[0] === otherWords[0]) {
+          const otherNamesMatch = words.slice(1).some(w => otherWords.slice(1).includes(w));
+          if (otherNamesMatch) return true;
+        }
+      }
+
       const commonWords = words.filter(w => otherWords.includes(w));
       return commonWords.length >= 2;
     });
