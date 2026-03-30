@@ -85,7 +85,7 @@ const PII_PATTERNS = {
   PASSPORT: /\b[A-Z]{1}\d{6}\b/gi,
   PHONE: /\b(?:(?:\+|00)351\s?)?[29]\d{8}\b/g,
   EMAIL: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
-  IBAN: /\bPT50\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\b/gi,
+  IBAN: /\bPT50\s?\d{21}\b/gi,
   JUIZ: /\bJuiz(?:\(a\))?\s+(?:de\s+Direito\s+)?([A-Z][a-zÀ-ÿ]+(?:\s+[A-Z][a-zÀ-ÿ]+)*)/g,
   AUTOR: /\bAutor(?:\(a\))?\s+([A-Z][a-zÀ-ÿ]+(?:\s+[A-Z][a-zÀ-ÿ]+)*)/g,
   // More aggressive name patterns for Portuguese
@@ -109,6 +109,56 @@ const NAME_TITLES = [
 const NAME_CLEAN_REGEX = new RegExp(`^\\s*(?:${NAME_TITLES.join('|')})\\s+|\\s+(?:${NAME_TITLES.join('|')})\\s*$`, 'gi');
 const CONJUNCTION_CLEAN_REGEX = /^\s*(?:e|ou|com|contra)\s+|\s+(?:e|ou|com|contra)\s*$/gi;
 const PUNCTUATION_CLEAN_REGEX = /^[.,;:\-\s]+|[.,;:\-\s]+$/g;
+
+export function isValidNIF(nif: string): boolean {
+  const s = nif.replace(/\s/g, '');
+  if (!/^[12356789]\d{8}$/.test(s)) return false;
+  let checkDigit = 0;
+  for (let i = 0; i < 8; i++) {
+    checkDigit += parseInt(s[i]) * (9 - i);
+  }
+  checkDigit = 11 - (checkDigit % 11);
+  if (checkDigit >= 10) checkDigit = 0;
+  return checkDigit === parseInt(s[8]);
+}
+
+export function isValidCC(cc: string): boolean {
+  const s = cc.replace(/\s/g, '').toUpperCase();
+  if (!/^\d{9}[A-Z]{2}\d$/.test(s)) return false;
+  
+  const getCharValue = (c: string) => {
+    const code = c.charCodeAt(0);
+    if (code >= 48 && code <= 57) return code - 48; // 0-9
+    return code - 55; // A=10, B=11...
+  };
+
+  let sum = 0;
+  for (let i = 0; i < s.length; i++) {
+    let val = getCharValue(s[i]);
+    if (i % 2 === 1) {
+      val *= 2;
+      if (val > 9) val -= 9;
+    }
+    sum += val;
+  }
+  return sum % 10 === 0;
+}
+
+export function isValidIBAN(iban: string): boolean {
+  const s = iban.replace(/\s/g, '').toUpperCase();
+  if (!/^PT50\d{21}$/.test(s)) return false;
+  
+  // Move PT50 to the end and convert to numbers (P=25, T=29)
+  // PT50 -> 25 29 50
+  const rearranged = s.substring(4) + "2529" + s.substring(2, 4);
+  
+  // Modulo 97 using big integers or string manipulation
+  let remainder = 0;
+  for (let i = 0; i < rearranged.length; i++) {
+    remainder = (remainder * 10 + parseInt(rearranged[i])) % 97;
+  }
+  return remainder === 1;
+}
 
 export function cleanName(name: string): string {
   let cleaned = name.trim();
@@ -166,20 +216,26 @@ export function scanText(text: string, fileId: string, existingEntities: PIIEnti
   const foundMatches: { text: string, type: string, start: number, end: number }[] = [];
 
   // 1. Regex Patterns
-  Object.entries(PII_PATTERNS).forEach(([type, pattern]) => {
-    let match;
-    const regex = new RegExp(pattern.source, pattern.flags);
-    while ((match = regex.exec(text)) !== null) {
-      const matchText = match[1] || match[0];
-      const start = match.index + (match[0].indexOf(matchText));
-      foundMatches.push({
-        text: matchText,
-        type: type.startsWith('NOME') ? 'NOME' : type,
-        start: start,
-        end: start + matchText.length
-      });
-    }
-  });
+    Object.entries(PII_PATTERNS).forEach(([type, pattern]) => {
+      let match;
+      const regex = new RegExp(pattern.source, pattern.flags);
+      while ((match = regex.exec(text)) !== null) {
+        const matchText = match[1] || match[0];
+        
+        // Checksum validation
+        if (type === 'NIF' && !isValidNIF(matchText)) continue;
+        if (type === 'CC' && !isValidCC(matchText)) continue;
+        if (type === 'IBAN' && !isValidIBAN(matchText)) continue;
+
+        const start = match.index + (match[0].indexOf(matchText));
+        foundMatches.push({
+          text: matchText,
+          type: type.startsWith('NOME') ? 'NOME' : type,
+          start: start,
+          end: start + matchText.length
+        });
+      }
+    });
 
   // 2. Portuguese Legal Patterns (Parties)
   const legalPatterns = [

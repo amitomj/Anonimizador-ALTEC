@@ -187,6 +187,11 @@ export default function App() {
   const [showExceptionsModal, setShowExceptionsModal] = useState(false);
   const [exceptionsTab, setExceptionsTab] = useState<'EXCECAO' | 'JUIZ' | 'AUTOR'>('EXCECAO');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [splitView, setSplitView] = useState(false);
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+  const [history, setHistory] = useState<{ entities: PIIEntity[], files: FileData[] }[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const isHistoryAction = useRef(false);
 
   // Auto-hide toast
   useEffect(() => {
@@ -199,6 +204,69 @@ export default function App() {
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ message, type });
   };
+
+  const pushToHistory = useCallback((newEntities: PIIEntity[], newFiles: FileData[]) => {
+    if (isHistoryAction.current) {
+      isHistoryAction.current = false;
+      return;
+    }
+    const newState = { entities: JSON.parse(JSON.stringify(newEntities)), files: JSON.parse(JSON.stringify(newFiles)) };
+    setHistory(prev => {
+      const next = prev.slice(0, historyIndex + 1);
+      next.push(newState);
+      if (next.length > 30) next.shift();
+      return next;
+    });
+    setHistoryIndex(prev => {
+      const next = prev + 1;
+      return next > 29 ? 29 : next;
+    });
+  }, [historyIndex]);
+
+  const undo = () => {
+    if (historyIndex > 0) {
+      isHistoryAction.current = true;
+      const prevState = history[historyIndex - 1];
+      setEntities(prevState.entities);
+      setFiles(prevState.files);
+      setHistoryIndex(historyIndex - 1);
+      showToast("Ação anulada", "info");
+    }
+  };
+
+  const redo = () => {
+    if (historyIndex < history.length - 1) {
+      isHistoryAction.current = true;
+      const nextState = history[historyIndex + 1];
+      setEntities(nextState.entities);
+      setFiles(nextState.files);
+      setHistoryIndex(historyIndex + 1);
+      showToast("Ação refeita", "info");
+    }
+  };
+
+  const handleExportReport = () => {
+    if (entities.length === 0) return;
+    
+    const reportData = entities
+      .filter(e => !e.ignored)
+      .map(e => ({
+        'Original': e.original,
+        'Pseudónimo': e.pseudonym,
+        'Tipo': e.type,
+        'Estado': e.enabled ? 'Ativo' : 'Inativo',
+        'Ficheiros': e.fileIds?.map(id => files.find(f => f.id === id)?.name).join(', ') || ''
+      }));
+
+    const ws = XLSX.utils.json_to_sheet(reportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Correspondências");
+    
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    saveAs(new Blob([wbout], { type: "application/octet-stream" }), `relatorio_correspondencias_${new Date().toISOString().slice(0,10)}.xlsx`);
+    showToast("Relatório exportado com sucesso", "success");
+  };
+
   const [isRelated, setIsRelated] = useState(true);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [globalKnowledge, setGlobalKnowledge] = useState<Record<string, string>>(() => {
@@ -235,6 +303,36 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('pii_global_knowledge', JSON.stringify(globalKnowledge));
   }, [globalKnowledge]);
+
+  // Auto-save project state
+  useEffect(() => {
+    const saved = localStorage.getItem('pii_project_state');
+    if (saved) {
+      try {
+        const { files: savedFiles, entities: savedEntities } = JSON.parse(saved);
+        if (savedFiles && savedEntities) {
+          setFiles(savedFiles);
+          setEntities(savedEntities);
+        }
+      } catch (e) {
+        console.error("Error loading saved state", e);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (files.length > 0 || entities.length > 0) {
+      localStorage.setItem('pii_project_state', JSON.stringify({ files, entities }));
+    }
+  }, [files, entities]);
+
+  // Initial history state
+  useEffect(() => {
+    if (history.length === 0 && (files.length > 0 || entities.length > 0)) {
+      setHistory([{ entities: JSON.parse(JSON.stringify(entities)), files: JSON.parse(JSON.stringify(files)) }]);
+      setHistoryIndex(0);
+    }
+  }, [files, entities, history.length]);
 
   // --- File Handling ---
 
@@ -288,6 +386,7 @@ export default function App() {
 
     const grouped = groupSimilarEntities(allNewEntities, isRelated);
     setEntities(grouped);
+    pushToHistory(grouped, filesToProcess);
     setIsProcessing(false);
   };
 
@@ -812,8 +911,9 @@ export default function App() {
 
   const handleSuggestGroups = () => {
     // More aggressive grouping for names
+    let next: PIIEntity[] = [];
     setEntities(prev => {
-      const next = [...prev];
+      next = [...prev];
       const nameEntities = next.filter(e => e.type === 'NOME' || e.type === 'JUIZ' || e.type === 'AUTOR');
       
       nameEntities.forEach(entity => {
@@ -859,6 +959,8 @@ export default function App() {
       
       return next;
     });
+    pushToHistory(next, files);
+    showToast("Sugestões de grupos aplicadas", "success");
   };
 
   const handleExpandStart = () => {
@@ -940,13 +1042,18 @@ export default function App() {
   };
 
   const clearAll = () => {
+    pushToHistory(entities, files);
     setFiles([]);
     setEntities([]);
     setSelectedIds(new Set());
+    showToast("Projeto limpo", "info");
   };
 
   const handleReGroup = () => {
-    setEntities(prev => groupSimilarEntities(prev, isRelated));
+    const grouped = groupSimilarEntities(entities, isRelated);
+    setEntities(grouped);
+    pushToHistory(grouped, files);
+    showToast("Agrupamentos re-analisados", "success");
   };
 
   const handleExportExceptions = () => {
@@ -1310,6 +1417,43 @@ export default function App() {
           
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-1 border-r border-gray-200 pr-4 mr-2">
+              <button 
+                onClick={undo}
+                disabled={historyIndex <= 0}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-600 disabled:opacity-30"
+                title="Anular (Undo)"
+              >
+                <RotateCcw className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={redo}
+                disabled={historyIndex >= history.length - 1}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-600 disabled:opacity-30"
+                title="Refazer (Redo)"
+              >
+                <RotateCw className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex items-center gap-1 border-r border-gray-200 pr-4 mr-2">
+              <button 
+                onClick={() => setSplitView(!splitView)}
+                className={`p-2 rounded-lg transition-colors ${splitView ? 'bg-indigo-100 text-indigo-600' : 'hover:bg-gray-100 text-gray-600'}`}
+                title="Visualização Lado-a-Lado (Split View)"
+              >
+                <Layers className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={handleExportReport}
+                disabled={entities.length === 0}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-600 disabled:opacity-30"
+                title="Exportar Relatório de Correspondências (Excel)"
+              >
+                <FileText className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex items-center gap-1 border-r border-gray-200 pr-4 mr-2">
               <label className="cursor-pointer p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-600" title="Importar Projeto (JSON)">
                 <FolderOpen className="w-4 h-4" />
                 <input type="file" accept=".json" className="hidden" onChange={handleImportProject} />
@@ -1343,82 +1487,126 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Left Column: Files & Controls */}
-        <div className="lg:col-span-4 space-y-6">
-          {/* Search Box */}
-          <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Procurar</h2>
-              {searchTerm && (
-                <button 
-                  onClick={() => setSearchTerm('')}
-                  className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
-                >
-                  Limpar
-                </button>
-              )}
-            </div>
-            <div className="relative">
-              <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input 
-                type="text" 
-                placeholder="Procurar elementos ou pseudónimos..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                autoComplete="off"
-                className="w-full pl-12 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-base focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all font-medium"
-              />
-            </div>
-          </div>
-
-          {/* Upload Box */}
-          <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Documentos</h2>
-              {files.length > 0 && (
-                <button 
-                  onClick={clearAll}
-                  className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1 font-medium"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  Limpar Tudo
-                </button>
-              )}
-            </div>
-            <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-              <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                <Upload className="w-8 h-8 text-gray-400 mb-2" />
-                <p className="text-sm text-gray-500 text-center px-4">Clique ou arraste ficheiros (incluindo relacionados)</p>
-                <p className="text-xs text-gray-400 mt-1">PDF, DOCX, XLSX, TXT</p>
-              </div>
-              <input type="file" className="hidden" multiple accept=".pdf,.docx,.xlsx,.txt" onChange={handleFileUpload} />
-            </label>
-
-            <div className="mt-4 space-y-2">
-              {files.map(file => (
-                <div key={file.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
-                  <div className="flex items-center gap-3 overflow-hidden">
-                    <FileText className="w-4 h-4 text-indigo-500 flex-shrink-0" />
-                    <span className="text-sm font-medium truncate">{file.name}</span>
-                  </div>
-                  {file.status === 'processing' ? (
-                    <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-                  ) : file.status === 'done' ? (
-                    <CheckCircle2 className="w-4 h-4 text-green-500" />
-                  ) : file.status === 'error' ? (
-                    <AlertCircle className="w-4 h-4 text-red-500" />
-                  ) : null}
+      <main className="max-w-7xl mx-auto px-4 py-8">
+        <div className={`grid grid-cols-1 ${splitView ? 'lg:grid-cols-1' : 'lg:grid-cols-12'} gap-8`}>
+          {/* Left Column: Files & Controls */}
+          {!splitView && (
+            <div className="lg:col-span-4 space-y-6">
+              {/* Search Box */}
+              <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Procurar</h2>
+                  {searchTerm && (
+                    <button 
+                      onClick={() => setSearchTerm('')}
+                      className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                    >
+                      Limpar
+                    </button>
+                  )}
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
+                <div className="relative">
+                  <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input 
+                    type="text" 
+                    placeholder="Procurar elementos ou pseudónimos..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    autoComplete="off"
+                    className="w-full pl-12 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-base focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all font-medium"
+                  />
+                </div>
+              </div>
 
-        {/* Right Column: Entities List */}
-        <div className="lg:col-span-8 space-y-6">
-          {/* Search & Bulk Actions Toolbar */}
-          <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+              {/* Upload Box */}
+              <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Documentos</h2>
+                  {files.length > 0 && (
+                    <button 
+                      onClick={clearAll}
+                      className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1 font-medium"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      Limpar Tudo
+                    </button>
+                  )}
+                </div>
+                <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                  <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                    <Upload className="w-8 h-8 text-gray-400 mb-2" />
+                    <p className="text-sm text-gray-500 text-center px-4">Clique ou arraste ficheiros (incluindo relacionados)</p>
+                    <p className="text-xs text-gray-400 mt-1">PDF, DOCX, XLSX, TXT</p>
+                  </div>
+                  <input type="file" className="hidden" multiple accept=".pdf,.docx,.xlsx,.txt" onChange={handleFileUpload} />
+                </label>
+
+                <div className="mt-4 space-y-2">
+                  {files.map(file => (
+                    <div 
+                      key={file.id} 
+                      onClick={() => setSelectedFileId(file.id)}
+                      className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${selectedFileId === file.id ? 'bg-indigo-50 border-indigo-200 shadow-sm' : 'bg-gray-50 border-gray-100 hover:border-gray-300'}`}
+                    >
+                      <div className="flex items-center gap-3 overflow-hidden">
+                        <FileText className="w-4 h-4 text-indigo-500 flex-shrink-0" />
+                        <span className="text-sm font-medium truncate">{file.name}</span>
+                      </div>
+                      {file.status === 'processing' ? (
+                        <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                      ) : file.status === 'done' ? (
+                        <CheckCircle2 className="w-4 h-4 text-green-500" />
+                      ) : file.status === 'error' ? (
+                        <AlertCircle className="w-4 h-4 text-red-500" />
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Right Column: Entities List or Split View */}
+          <div className={`${splitView ? 'lg:col-span-12' : 'lg:col-span-8'} space-y-6`}>
+            {splitView ? (
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden flex flex-col h-[calc(100vh-200px)]">
+                <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+                  <div className="flex items-center gap-4">
+                    <h2 className="text-sm font-bold text-gray-700">Comparação Lado-a-Lado</h2>
+                    <select 
+                      value={selectedFileId || ''} 
+                      onChange={(e) => setSelectedFileId(e.target.value)}
+                      className="text-xs border border-gray-200 rounded px-2 py-1 bg-white"
+                    >
+                      <option value="">Selecionar Ficheiro...</option>
+                      {files.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                    </select>
+                  </div>
+                  <button onClick={() => setSplitView(false)} className="text-xs text-gray-500 hover:text-gray-700">Fechar</button>
+                </div>
+                
+                <div className="flex-1 flex overflow-hidden">
+                  {/* Original Text */}
+                  <div className="flex-1 border-r border-gray-100 flex flex-col">
+                    <div className="p-2 bg-gray-100/50 text-[10px] font-bold text-gray-500 uppercase tracking-wider text-center">Original</div>
+                    <div className="flex-1 p-6 overflow-y-auto font-mono text-sm whitespace-pre-wrap text-gray-600 bg-white">
+                      {selectedFileId ? files.find(f => f.id === selectedFileId)?.content || "Sem conteúdo" : "Selecione um ficheiro para visualizar"}
+                    </div>
+                  </div>
+                  
+                  {/* Anonymized Text */}
+                  <div className="flex-1 flex flex-col">
+                    <div className="p-2 bg-indigo-50 text-[10px] font-bold text-indigo-500 uppercase tracking-wider text-center">Anonimizado</div>
+                    <div className="flex-1 p-6 overflow-y-auto font-mono text-sm whitespace-pre-wrap text-gray-900 bg-white">
+                      {selectedFileId ? anonymizeText(files.find(f => f.id === selectedFileId)?.content || "", entities) : "Selecione um ficheiro para visualizar"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Search & Bulk Actions Toolbar */}
+                <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm space-y-4">
             <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-xl mr-2">
@@ -1765,8 +1953,11 @@ export default function App() {
               );
             })}
           </div>
-        </div>
-      </main>
+        </>
+      )}
+    </div>
+  </div>
+</main>
 
       {/* Floating Action Bar */}
       <AnimatePresence>
