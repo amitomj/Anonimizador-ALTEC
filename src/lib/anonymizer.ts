@@ -30,6 +30,7 @@ export const PII_COLORS: Record<string, { bg: [number, number, number], text: [n
   IBAN: { bg: [0.7, 0.6, 0.1], text: [1, 1, 1], hex: '#B8860B', textHex: '#FFFFFF' },  // Ouro Velho
   AUTOR: { bg: [0, 0, 0], text: [1, 1, 1], hex: '#000000', textHex: '#FFFFFF' },      // Preto
   JUIZ: { bg: [0, 0, 0.5], text: [1, 1, 1], hex: '#000080', textHex: '#FFFFFF' },     // Azul Marinho
+  TESTEMUNHA: { bg: [0.5, 0.5, 0.5], text: [1, 1, 1], hex: '#808080', textHex: '#FFFFFF' }, // Cinza
 };
 
 // Lista de exceções globais padrão
@@ -153,6 +154,7 @@ export function getNextPseudonym(type: string, existingEntities: PIIEntity[]): s
     IBAN: 'IBAN',
     AUTOR: 'AUTOR',
     JUIZ: 'JUIZ',
+    TESTEMUNHA: 'TESTEMUNHA',
   };
 
   const prefix = prefixes[type] || type;

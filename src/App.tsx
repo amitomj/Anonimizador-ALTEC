@@ -507,6 +507,46 @@ export default function App() {
     setEditingEntity(entity);
   };
 
+  const handleBulkUpdateType = (newType: string) => {
+    if (selectedIds.size === 0) return;
+    
+    setEntities(prev => {
+      const next = [...prev];
+      const selectedEntities = next.filter(e => selectedIds.has(e.id));
+      
+      // Group selected entities by their original text to ensure consistent pseudonyms
+      const byOriginal: Record<string, string> = {};
+      
+      return next.map(e => {
+        if (selectedIds.has(e.id)) {
+          if (!byOriginal[e.original.toLowerCase()]) {
+            byOriginal[e.original.toLowerCase()] = getNextPseudonym(newType, next.filter(ent => !selectedIds.has(ent.id)));
+          }
+          return { ...e, type: newType, pseudonym: byOriginal[e.original.toLowerCase()], treated: true };
+        }
+        return e;
+      });
+    });
+    showToast(`${selectedIds.size} elementos alterados para ${newType}.`, "success");
+  };
+
+  const handleUpdateGroupType = (groupId: string, newType: string) => {
+    setEntities(prev => {
+      const groupEntities = prev.filter(e => e.groupId === groupId);
+      if (groupEntities.length === 0) return prev;
+      
+      const newPseudonym = getNextPseudonym(newType, prev.filter(e => e.groupId !== groupId));
+      
+      return prev.map(e => {
+        if (e.groupId === groupId) {
+          return { ...e, type: newType, pseudonym: newPseudonym, treated: true };
+        }
+        return e;
+      });
+    });
+    showToast(`Categoria do grupo alterada para ${newType}.`, "success");
+  };
+
   const handleUpdateEntity = (id: string, updates: Partial<PIIEntity>) => {
     const entityToUpdate = entities.find(e => e.id === id);
     if (!entityToUpdate) return;
@@ -1454,6 +1494,21 @@ export default function App() {
                   </button>
                 </div>
                 <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1 bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors border border-indigo-200">
+                    <span className="mr-1">Alterar para:</span>
+                    <select 
+                      className="bg-transparent border-none focus:outline-none cursor-pointer"
+                      value=""
+                      onChange={(e) => {
+                        if (e.target.value) handleBulkUpdateType(e.target.value);
+                      }}
+                    >
+                      <option value="" disabled>Selecionar...</option>
+                      {Object.keys(PII_COLORS).map(type => (
+                        <option key={type} value={type}>{type}</option>
+                      ))}
+                    </select>
+                  </div>
                   <button 
                     onClick={handleValidateSelected}
                     className="flex items-center gap-1 bg-green-50 text-green-700 hover:bg-green-100 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors border border-green-200"
@@ -1568,6 +1623,20 @@ export default function App() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
+                        <select 
+                          className="text-[10px] font-bold bg-white border border-gray-200 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          value={group[0].type}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            handleUpdateGroupType(groupId, e.target.value);
+                          }}
+                          title="Alterar categoria de todo o grupo"
+                        >
+                          {Object.keys(PII_COLORS).map(type => (
+                            <option key={type} value={type}>{type}</option>
+                          ))}
+                        </select>
                         <button 
                           onClick={(e) => {
                             e.stopPropagation();
