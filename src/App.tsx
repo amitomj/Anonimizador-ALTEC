@@ -51,6 +51,7 @@ export default function App() {
   const [showExceptionsModal, setShowExceptionsModal] = useState(false);
   const [exceptionsTab, setExceptionsTab] = useState<'EXCECAO' | 'JUIZ' | 'AUTOR'>('EXCECAO');
   const [isRelated, setIsRelated] = useState(true);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [globalKnowledge, setGlobalKnowledge] = useState<Record<string, string>>(() => {
     const saved = localStorage.getItem('pii_global_knowledge');
     return saved ? JSON.parse(saved) : {};
@@ -182,16 +183,40 @@ export default function App() {
   };
 
   const handleValidateSelected = () => {
-    setEntities(prev => prev.map(e => 
-      selectedIds.has(e.id) ? { ...e, treated: true, ignored: false } : e
-    ));
+    const affectedGroupIds = new Set<string>();
+    setEntities(prev => prev.map(e => {
+      if (selectedIds.has(e.id)) {
+        if (e.groupId) affectedGroupIds.add(e.groupId);
+        return { ...e, treated: true, ignored: false };
+      }
+      return e;
+    }));
+    if (affectedGroupIds.size > 0) {
+      setCollapsedGroups(prev => {
+        const next = new Set(prev);
+        affectedGroupIds.forEach(gid => next.add(gid));
+        return next;
+      });
+    }
     setSelectedIds(new Set());
   };
 
   const handleIgnoreSelected = () => {
-    setEntities(prev => prev.map(e => 
-      selectedIds.has(e.id) ? { ...e, ignored: true, treated: false } : e
-    ));
+    const affectedGroupIds = new Set<string>();
+    setEntities(prev => prev.map(e => {
+      if (selectedIds.has(e.id)) {
+        if (e.groupId) affectedGroupIds.add(e.groupId);
+        return { ...e, ignored: true, treated: false };
+      }
+      return e;
+    }));
+    if (affectedGroupIds.size > 0) {
+      setCollapsedGroups(prev => {
+        const next = new Set(prev);
+        affectedGroupIds.forEach(gid => next.add(gid));
+        return next;
+      });
+    }
     setSelectedIds(new Set());
   };
 
@@ -205,6 +230,7 @@ export default function App() {
     setEntities(prev => prev.map(e => 
       selectedIds.has(e.id) ? { ...e, groupId, pseudonym: basePseudonym } : e
     ));
+    setCollapsedGroups(prev => new Set(prev).add(groupId));
     setSelectedIds(new Set());
   };
 
@@ -272,8 +298,60 @@ export default function App() {
     if (!entityToUpdate) return;
 
     const updated = { ...entityToUpdate, ...updates };
+    const newlySelectedIds: string[] = [];
     
-    setEntities(prev => prev.map(e => e.id === id ? updated : e));
+    const nextEntities = entities.map(e => {
+      if (e.id === id) return updated;
+      
+      // Auto-expansion logic for group members when original text is updated
+      if (updates.original && updated.groupId && e.groupId === updated.groupId) {
+        const words = updated.original.split(/\s+/).filter(w => w.length > 0);
+        let curOrig = e.original;
+        let curBefore = e.contextBefore || "";
+        let curAfter = e.contextAfter || "";
+        let changed = false;
+
+        // Expand Start
+        while (true) {
+          const wordsBefore = curBefore.trim().split(/\s+/);
+          const lastWord = wordsBefore[wordsBefore.length - 1];
+          if (lastWord && words.some(w => w.toLowerCase() === lastWord.toLowerCase()) && !curOrig.toLowerCase().includes(lastWord.toLowerCase())) {
+            curOrig = `${lastWord} ${curOrig}`;
+            const lastIdx = curBefore.lastIndexOf(lastWord);
+            curBefore = curBefore.substring(0, lastIdx).trimEnd();
+            changed = true;
+          } else break;
+        }
+
+        // Expand End
+        while (true) {
+          const wordsAfter = curAfter.trim().split(/\s+/);
+          const firstWord = wordsAfter[0];
+          if (firstWord && words.some(w => w.toLowerCase() === firstWord.toLowerCase()) && !curOrig.toLowerCase().includes(firstWord.toLowerCase())) {
+            curOrig = `${curOrig} ${firstWord}`;
+            const firstIdx = curAfter.indexOf(firstWord);
+            curAfter = curAfter.substring(firstIdx + firstWord.length).trimStart();
+            changed = true;
+          } else break;
+        }
+
+        if (changed) {
+          newlySelectedIds.push(e.id);
+          return { ...e, original: curOrig, contextBefore: curBefore, contextAfter: curAfter };
+        }
+      }
+      return e;
+    });
+
+    setEntities(nextEntities);
+
+    if (newlySelectedIds.length > 0) {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        newlySelectedIds.forEach(sid => next.add(sid));
+        return next;
+      });
+    }
 
     // Side effects after state update
     if (updated.type === 'EXCECAO' || updated.type === 'JUIZ' || updated.type === 'AUTOR') {
@@ -495,39 +573,45 @@ export default function App() {
         const text = item.str;
         if (!text.trim() || text.trim().length < 2) continue;
 
-        const matchingEntity = sortedEntities.find(entity => {
-          const original = entity.original;
-          return text.includes(original) || (original.includes(text) && text.trim().length > 3);
-        });
+        // Find all entities that appear in this text item
+        const matchesInItem = sortedEntities
+          .filter(entity => text.includes(entity.original))
+          .sort((a, b) => text.indexOf(a.original) - text.indexOf(b.original));
 
-        if (matchingEntity) {
+        if (matchesInItem.length > 0) {
           // item.transform: [scaleX, skewY, skewX, scaleY, x, y]
           const [scaleX, , , scaleY, x, y] = item.transform;
-          
-          // Convert PDF points to Canvas pixels
-          // PDF y is from bottom, Canvas y is from top
           const pHeight = viewport.viewBox[3];
           const fontSize = Math.abs(scaleY);
-          
-          const cX = x * scale;
-          const cY = (pHeight - y - fontSize) * scale;
-          const cWidth = (item.width || (text.length * fontSize * 0.5)) * scale;
-          const cHeight = fontSize * 1.2 * scale;
+          const charWidth = item.width / text.length;
 
-          const colorInfo = PII_COLORS[matchingEntity.type] || { hex: '#FFD700', textHex: '#000000' };
+          // We need to handle multiple matches in the same string
+          matchesInItem.forEach(matchingEntity => {
+            const original = matchingEntity.original;
+            const startIndex = text.indexOf(original);
+            if (startIndex === -1) return;
 
-          // Draw the redaction box (Solid color)
-          context.fillStyle = colorInfo.hex;
-          context.fillRect(cX, cY, cWidth, cHeight);
+            const cX = (x + (startIndex * charWidth)) * scale;
+            const cY = (pHeight - y - fontSize) * scale;
+            const cWidth = original.length * charWidth * scale;
+            const cHeight = fontSize * 1.2 * scale;
 
-          // Draw the pseudonym text
-          if (text.length > 4 || text.trim() === matchingEntity.original) {
-            context.fillStyle = colorInfo.textHex;
-            const drawFontSize = Math.max(10, fontSize * 0.8 * scale);
-            context.font = `bold ${drawFontSize}px Arial, sans-serif`;
-            context.textBaseline = 'middle';
-            context.fillText(matchingEntity.pseudonym, cX + (2 * scale), cY + (cHeight / 2));
-          }
+            const colorInfo = PII_COLORS[matchingEntity.type] || { hex: '#FFD700', textHex: '#000000' };
+
+            // Draw the redaction box (Solid color)
+            context.fillStyle = colorInfo.hex;
+            context.fillRect(cX, cY, cWidth, cHeight);
+
+            // Draw the pseudonym text
+            if (original.length > 4 || original === matchingEntity.original) {
+              context.fillStyle = colorInfo.textHex;
+              const drawFontSize = Math.max(8, fontSize * 0.7 * scale);
+              context.font = `bold ${drawFontSize}px Arial, sans-serif`;
+              context.textBaseline = 'middle';
+              context.textAlign = 'center';
+              context.fillText(matchingEntity.pseudonym, cX + (cWidth / 2), cY + (cHeight / 2));
+            }
+          });
         }
       }
 
@@ -992,152 +1076,186 @@ export default function App() {
           </div>
 
           <div className="space-y-4">
-            {Object.entries(groupedEntities).map(([groupId, group]: [string, PIIEntity[]]) => (
-              <motion.div 
-                key={groupId}
-                layout
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden"
-              >
-                {group.length > 1 ? (
-                  <div className="p-4 bg-gray-50/50 border-b border-gray-100 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <input 
-                        type="checkbox"
-                        checked={group.every(e => selectedIds.has(e.id))}
-                        onChange={() => toggleSelectGroup(group)}
-                        className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <div className="bg-indigo-100 text-indigo-700 p-1.5 rounded-lg">
-                        <Layers className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-bold">Grupo: {group[0].original}</h3>
-                        <p className="text-xs text-gray-500">{group.length} ocorrências</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button 
-                        onClick={() => handleCopyPseudonym(group[0].pseudonym)}
-                        className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-indigo-600 transition-colors"
-                        title="Copiar Pseudónimo"
-                      >
-                        <History className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
+            {Object.entries(groupedEntities).map(([groupId, group]: [string, PIIEntity[]]) => {
+              const isCollapsed = collapsedGroups.has(groupId);
+              const isManualGroup = groupId.startsWith('manual-group-') || groupId.startsWith('group-');
+              const isProcessed = group.every(e => e.treated || e.ignored);
 
-                <div className="divide-y divide-gray-100">
-                  {group.map((entity: PIIEntity) => (
+              return (
+                <motion.div 
+                  key={groupId}
+                  layout
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden"
+                >
+                  {group.length > 1 || isManualGroup ? (
                     <div 
-                      key={entity.id} 
-                      className={`p-4 flex items-center gap-4 transition-colors ${
-                        selectedIds.has(entity.id) ? 'bg-indigo-50/30' : 'hover:bg-gray-50/30'
+                      className={`p-4 flex items-center justify-between cursor-pointer transition-colors ${
+                        isCollapsed ? 'bg-gray-50/80' : 'bg-gray-50/50 border-b border-gray-100'
                       }`}
+                      onClick={() => {
+                        setCollapsedGroups(prev => {
+                          const next = new Set(prev);
+                          if (next.has(groupId)) next.delete(groupId);
+                          else next.add(groupId);
+                          return next;
+                        });
+                      }}
                     >
-                      <input 
-                        type="checkbox"
-                        checked={selectedIds.has(entity.id)}
-                        onChange={() => toggleEntitySelection(entity.id)}
-                        className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                      />
-                      
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span 
-                            className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
-                            style={{ 
-                              backgroundColor: PII_COLORS[entity.type]?.hex,
-                              color: PII_COLORS[entity.type]?.textHex || '#000000'
-                            }}
-                          >
-                            {entity.type}
-                          </span>
-                          <span className="text-sm font-semibold truncate">
-                            {['NIF', 'CC', 'PASSPORT', 'IBAN'].includes(entity.type) && entity.contextSnippet ? (
-                              <span className="text-xs italic text-gray-500 font-normal">
-                                ...{entity.contextSnippet}...
-                              </span>
-                            ) : (
-                              entity.original
-                            )}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-3">
+                        <div 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleSelectGroup(group);
+                          }}
+                        >
                           <input 
-                            type="text"
-                            value={entity.pseudonym}
-                            onChange={(e) => updatePseudonym(entity.id, e.target.value)}
-                            className="text-xs font-mono bg-gray-100 px-2 py-1 rounded border border-transparent focus:border-indigo-300 focus:bg-white outline-none w-32"
+                            type="checkbox"
+                            checked={group.every(e => selectedIds.has(e.id))}
+                            onChange={() => {}} // Handled by parent div click or stopPropagation
+                            className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                           />
-                          {entity.treated && <CheckCircle2 className="w-3 h-3 text-green-500" />}
-                          {entity.ignored && <EyeOff className="w-3 h-3 text-gray-400" />}
+                        </div>
+                        <div className="bg-indigo-100 text-indigo-700 p-1.5 rounded-lg">
+                          <Layers className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-bold flex items-center gap-2">
+                            Grupo: {group[0].original}
+                            {isProcessed && <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />}
+                          </h3>
+                          <p className="text-xs text-gray-500">{group.length} ocorrências • {group[0].pseudonym}</p>
                         </div>
                       </div>
-
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-2">
                         <button 
-                          onClick={() => addToGlobalKnowledge(entity.original)}
-                          className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-red-600 transition-colors"
-                          title="Adicionar às exceções globais"
-                        >
-                          <Shield className="w-4 h-4" />
-                        </button>
-                        <button 
-                          onClick={() => setEditingEntity(entity)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCopyPseudonym(group[0].pseudonym);
+                          }}
                           className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-indigo-600 transition-colors"
-                          title="Ver contexto e editar"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                        <button 
-                          onClick={() => setEntities(prev => prev.map(e => e.id === entity.id ? { ...e, treated: !e.treated, ignored: false } : e))}
-                          className={`p-2 rounded-lg transition-colors ${entity.treated ? 'text-green-600 bg-green-50' : 'text-gray-400 hover:bg-white hover:text-green-600'}`}
-                          title="Validar"
-                        >
-                          <Check className="w-4 h-4" />
-                        </button>
-                        <button 
-                          onClick={() => setEntities(prev => prev.map(e => e.id === entity.id ? { ...e, ignored: !e.ignored, treated: false } : e))}
-                          className={`p-2 rounded-lg transition-colors ${entity.ignored ? 'text-red-600 bg-red-50' : 'text-gray-400 hover:bg-white hover:text-red-600'}`}
-                          title="Ignorar"
-                        >
-                          <EyeOff className="w-4 h-4" />
-                        </button>
-                        {entity.original.includes(' ') && (
-                          <button 
-                            onClick={() => handleSplitEntity(entity)}
-                            className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-indigo-600 transition-colors"
-                            title="Dividir Elemento"
-                          >
-                            <Scissors className="w-4 h-4" />
-                          </button>
-                        )}
-                        <button 
-                          onClick={() => handleCopyPseudonym(entity.pseudonym)}
-                          className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-indigo-600 transition-colors"
-                          title="Copiar"
+                          title="Copiar Pseudónimo"
                         >
                           <History className="w-4 h-4" />
                         </button>
-                        <button 
-                          onClick={() => {
-                            setSelectedIds(new Set([entity.id]));
-                            setShowMergeModal(true);
-                          }}
-                          className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-indigo-600 transition-colors"
-                          title="Unir a Grupo"
-                        >
-                          <Link className="w-4 h-4" />
-                        </button>
+                        {isCollapsed ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
                       </div>
                     </div>
-                  ))}
-                </div>
-              </motion.div>
-            ))}
+                  ) : null}
+
+                  {!isCollapsed && (
+                    <div className="divide-y divide-gray-100">
+                      {group.map((entity: PIIEntity) => (
+                        <div 
+                          key={entity.id} 
+                          className={`p-4 flex items-center gap-4 transition-colors ${
+                            selectedIds.has(entity.id) ? 'bg-indigo-50/30' : 'hover:bg-gray-50/30'
+                          }`}
+                        >
+                          <input 
+                            type="checkbox"
+                            checked={selectedIds.has(entity.id)}
+                            onChange={() => toggleEntitySelection(entity.id)}
+                            className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                          />
+                          
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span 
+                                className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
+                                style={{ 
+                                  backgroundColor: PII_COLORS[entity.type]?.hex,
+                                  color: PII_COLORS[entity.type]?.textHex || '#000000'
+                                }}
+                              >
+                                {entity.type}
+                              </span>
+                              <span className="text-sm font-semibold truncate">
+                                {['NIF', 'CC', 'PASSPORT', 'IBAN'].includes(entity.type) && entity.contextSnippet ? (
+                                  <span className="text-xs italic text-gray-500 font-normal">
+                                    ...{entity.contextSnippet}...
+                                  </span>
+                                ) : (
+                                  entity.original
+                                )}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input 
+                                type="text"
+                                value={entity.pseudonym}
+                                onChange={(e) => updatePseudonym(entity.id, e.target.value)}
+                                className="text-xs font-mono bg-gray-100 px-2 py-1 rounded border border-transparent focus:border-indigo-300 focus:bg-white outline-none w-32"
+                              />
+                              {entity.treated && <CheckCircle2 className="w-3 h-3 text-green-500" />}
+                              {entity.ignored && <EyeOff className="w-3 h-3 text-gray-400" />}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            <button 
+                              onClick={() => addToGlobalKnowledge(entity.original)}
+                              className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-red-600 transition-colors"
+                              title="Adicionar às exceções globais"
+                            >
+                              <Shield className="w-4 h-4" />
+                            </button>
+                            <button 
+                              onClick={() => setEditingEntity(entity)}
+                              className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-indigo-600 transition-colors"
+                              title="Ver contexto e editar"
+                            >
+                              <Eye className="w-4 h-4" />
+                            </button>
+                            <button 
+                              onClick={() => setEntities(prev => prev.map(e => e.id === entity.id ? { ...e, treated: !e.treated, ignored: false } : e))}
+                              className={`p-2 rounded-lg transition-colors ${entity.treated ? 'text-green-600 bg-green-50' : 'text-gray-400 hover:bg-white hover:text-green-600'}`}
+                              title="Validar"
+                            >
+                              <Check className="w-4 h-4" />
+                            </button>
+                            <button 
+                              onClick={() => setEntities(prev => prev.map(e => e.id === entity.id ? { ...e, ignored: !e.ignored, treated: false } : e))}
+                              className={`p-2 rounded-lg transition-colors ${entity.ignored ? 'text-red-600 bg-red-50' : 'text-gray-400 hover:bg-white hover:text-red-600'}`}
+                              title="Ignorar"
+                            >
+                              <EyeOff className="w-4 h-4" />
+                            </button>
+                            {entity.original.includes(' ') && (
+                              <button 
+                                onClick={() => handleSplitEntity(entity)}
+                                className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-indigo-600 transition-colors"
+                                title="Dividir Elemento"
+                              >
+                                <Scissors className="w-4 h-4" />
+                              </button>
+                            )}
+                            <button 
+                              onClick={() => handleCopyPseudonym(entity.pseudonym)}
+                              className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-indigo-600 transition-colors"
+                              title="Copiar"
+                            >
+                              <History className="w-4 h-4" />
+                            </button>
+                            <button 
+                              onClick={() => {
+                                setSelectedIds(new Set([entity.id]));
+                                setShowMergeModal(true);
+                              }}
+                              className="p-2 hover:bg-white rounded-lg text-gray-400 hover:text-indigo-600 transition-colors"
+                              title="Unir a Grupo"
+                            >
+                              <Link className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </motion.div>
+              );
+            })}
           </div>
         </div>
       </main>

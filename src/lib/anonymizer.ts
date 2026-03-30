@@ -130,21 +130,34 @@ export function getNextPseudonym(type: string, existingEntities: PIIEntity[]): s
   const typeEntities = existingEntities.filter(e => e.type === type);
   const count = new Set(typeEntities.map(e => e.original.toLowerCase())).size + 1;
   
+  if (type === 'NOME') {
+    // Generate AA, BB, CC...
+    const charCode = 64 + count; // 65 is 'A'
+    if (count <= 26) {
+      const char = String.fromCharCode(charCode);
+      return `NOME.${char}${char}`;
+    } else {
+      // Fallback for more than 26 names: AAA, BBB...
+      const repeat = Math.floor((count - 1) / 26) + 2;
+      const char = String.fromCharCode(65 + ((count - 1) % 26));
+      return `NOME.${char.repeat(repeat)}`;
+    }
+  }
+
   const prefixes: Record<string, string> = {
-    NOME: 'Pessoa',
-    LOCAL: 'Local',
-    PHONE: 'Tel',
+    LOCAL: 'LOCAL',
+    PHONE: 'TELEFONE',
     NIF: 'NIF',
     CC: 'CC',
-    PASSPORT: 'Pass',
-    EMAIL: 'Email',
+    PASSPORT: 'PASSAPORTE',
+    EMAIL: 'EMAIL',
     IBAN: 'IBAN',
-    AUTOR: 'Autor',
-    JUIZ: 'Juiz',
+    AUTOR: 'AUTOR',
+    JUIZ: 'JUIZ',
   };
 
-  const prefix = prefixes[type] || 'Entidade';
-  return `${prefix} ${count}`;
+  const prefix = prefixes[type] || type;
+  return `${prefix}.${count}`;
 }
 
 export function scanText(text: string, fileId: string, existingEntities: PIIEntity[] = [], isRelated: boolean = true, globalKnowledge: Record<string, string> = {}): PIIEntity[] {
