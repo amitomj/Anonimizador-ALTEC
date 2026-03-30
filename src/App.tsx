@@ -12,6 +12,8 @@ import * as pdfjs from 'pdfjs-dist';
 // @ts-ignore
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import mammoth from 'mammoth';
+import * as XLSX from 'xlsx';
 import { saveAs } from 'file-saver';
 import JSZip from 'jszip';
 import { 
@@ -117,12 +119,17 @@ export default function App() {
         let text = '';
         if (fileData.type === 'application/pdf') {
           text = await extractTextFromPDF(fileData.rawFile);
+        } else if (fileData.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || fileData.name.endsWith('.docx')) {
+          text = await extractTextFromDocx(fileData.rawFile);
+        } else if (fileData.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || fileData.name.endsWith('.xlsx')) {
+          text = await extractTextFromXlsx(fileData.rawFile);
         } else {
           // Fallback for other types or simple text
           text = await fileData.rawFile.text();
         }
 
         const fileEntities = scanText(text, fileData.id, allNewEntities, isRelated, globalKnowledge);
+        console.log(`Found ${fileEntities.length} entities in file ${fileData.name}`);
         allNewEntities = [...allNewEntities, ...fileEntities];
 
         setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, content: text, status: 'done' } : f));
@@ -135,6 +142,63 @@ export default function App() {
     const grouped = groupSimilarEntities(allNewEntities, isRelated);
     setEntities(grouped);
     setIsProcessing(false);
+  };
+
+  const extractTextFromDocx = async (file: File): Promise<string> => {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const zip = await JSZip.loadAsync(arrayBuffer);
+      const docXml = await zip.file("word/document.xml")?.async("string");
+      if (!docXml) throw new Error("Could not find word/document.xml");
+      
+      // Simple XML to text extraction
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(docXml, "text/xml");
+      const paragraphs = xmlDoc.getElementsByTagName("w:p");
+      let text = "";
+      for (let i = 0; i < paragraphs.length; i++) {
+        const texts = paragraphs[i].getElementsByTagName("w:t");
+        for (let j = 0; j < texts.length; j++) {
+          text += texts[j].textContent;
+        }
+        text += "\n";
+      }
+      console.log('DOCX extracted text length:', text.length);
+      
+      // If manual extraction is too short or empty, try mammoth as fallback
+      if (text.trim().length < 10) {
+        try {
+          const result = await mammoth.extractRawText({ arrayBuffer });
+          return result.value;
+        } catch (e) {
+          console.warn('Mammoth fallback failed:', e);
+        }
+      }
+      
+      return text;
+    } catch (error) {
+      console.error('Error extracting text from DOCX:', error);
+      // Try mammoth as absolute fallback
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        return result.value;
+      } catch (mError) {
+        console.error('Mammoth also failed:', mError);
+        throw error;
+      }
+    }
+  };
+
+  const extractTextFromXlsx = async (file: File): Promise<string> => {
+    const arrayBuffer = await file.arrayBuffer();
+    const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+    let fullText = '';
+    workbook.SheetNames.forEach(sheetName => {
+      const worksheet = workbook.Sheets[sheetName];
+      fullText += XLSX.utils.sheet_to_txt(worksheet) + '\n\n';
+    });
+    return fullText;
   };
 
   const extractTextFromPDF = async (file: File): Promise<string> => {
@@ -921,7 +985,7 @@ export default function App() {
                 <p className="text-sm text-gray-500 text-center px-4">Clique ou arraste ficheiros (incluindo relacionados)</p>
                 <p className="text-xs text-gray-400 mt-1">PDF, DOCX, XLSX, TXT</p>
               </div>
-              <input type="file" className="hidden" multiple onChange={handleFileUpload} />
+              <input type="file" className="hidden" multiple accept=".pdf,.docx,.xlsx,.txt" onChange={handleFileUpload} />
             </label>
 
             <div className="mt-4 space-y-2">
