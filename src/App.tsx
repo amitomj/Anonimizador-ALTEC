@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   Upload, FileText, Check, X, Trash2, Eye, EyeOff, 
   Layers, Plus, Scissors, Lock, Download, AlertCircle,
@@ -39,6 +39,53 @@ interface FileData {
   rawFile: File;
   status: 'pending' | 'processing' | 'done' | 'error';
 }
+
+const HighlightText = ({ text, entities, mode }: { text: string, entities: PIIEntity[], mode: 'original' | 'anonymized' }) => {
+  if (!text) return null;
+  
+  // Filter entities that are actually being anonymized
+  const activeEntities = entities.filter(e => e.enabled && !e.ignored && e.type !== 'AUTOR' && e.type !== 'JUIZ');
+  if (activeEntities.length === 0) return <>{text}</>;
+
+  const patterns = activeEntities.map(e => ({
+    pattern: mode === 'original' ? e.original : e.pseudonym,
+    entity: e
+  })).filter(p => p.pattern.length > 0);
+
+  if (patterns.length === 0) return <>{text}</>;
+
+  // Sort patterns by length descending to match longest first
+  patterns.sort((a, b) => b.pattern.length - a.pattern.length);
+
+  const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Use a map to deduplicate patterns to avoid regex errors or redundant matches
+  const uniquePatterns = Array.from(new Set(patterns.map(p => p.pattern)));
+  const combinedRegex = new RegExp(`(${uniquePatterns.map(p => escapeRegExp(p)).join('|')})`, 'g');
+  
+  const parts = text.split(combinedRegex);
+  
+  return (
+    <>
+      {parts.map((part, i) => {
+        const match = patterns.find(p => p.pattern === part);
+        if (match) {
+          const color = PII_COLORS[match.entity.type] || { hex: '#E5E7EB', textHex: '#374151' };
+          return (
+            <span 
+              key={i} 
+              className="px-0.5 rounded font-bold"
+              style={{ backgroundColor: color.hex, color: color.textHex }}
+              title={`${match.entity.type}: ${match.entity.original} -> ${match.entity.pseudonym}`}
+            >
+              {part}
+            </span>
+          );
+        }
+        return part;
+      })}
+    </>
+  );
+};
 
 const DEFAULT_JUDGES = [
   "Maria dos Prazeres Couceiro Pizarro Beleza", "Maria Clara Pereira de Sousa de Santiago Sottomayor", "Mário Belo Morgado",
@@ -591,15 +638,23 @@ export default function App() {
   };
 
   const updatePseudonym = (id: string, newPseudonym: string) => {
-    const entity = entities.find(e => e.id === id);
-    if (!entity) return;
+    setEntities(prev => {
+      const entity = prev.find(e => e.id === id);
+      if (!entity) return prev;
 
-    setEntities(prev => prev.map(e => {
-      if (e.id === id || (entity.groupId && e.groupId === entity.groupId)) {
-        return { ...e, pseudonym: newPseudonym };
-      }
-      return e;
-    }));
+      const next = prev.map(e => {
+        if (e.id === id || (entity.groupId && e.groupId === entity.groupId)) {
+          return { ...e, pseudonym: newPseudonym };
+        }
+        return e;
+      });
+      
+      // We call pushToHistory outside or use a timeout to avoid React warnings about state updates during render
+      // But since this is an event handler, it's usually fine. 
+      // However, to be safe and ensure we use the latest 'files':
+      setTimeout(() => pushToHistory(next, files), 0);
+      return next;
+    });
   };
 
   const handleSplitEntity = (entity: PIIEntity) => {
@@ -1056,6 +1111,134 @@ export default function App() {
     showToast("Agrupamentos re-analisados", "success");
   };
 
+  const handleFixAllConflicts = () => {
+    setEntities(prev => {
+      // 1. Re-calculate conflicts based on the absolute latest state 'prev'
+      const pToGroups = new Map<string, Set<string>>();
+      prev.forEach(e => {
+        if (e.ignored || !e.enabled) return;
+        const p = e.pseudonym.trim();
+        if (!p) return;
+        const groupKey = e.groupId || `single-${e.id}`;
+        if (!pToGroups.has(p)) pToGroups.set(p, new Set());
+        pToGroups.get(p)!.add(groupKey);
+      });
+      
+      const conflicts = new Set<string>();
+      pToGroups.forEach((groups, pseudonym) => {
+        if (groups.size > 1) conflicts.add(pseudonym);
+      });
+
+      if (conflicts.size === 0) {
+        // Use a timeout for side effects like toast/history to avoid issues inside setEntities
+        setTimeout(() => showToast("Não foram encontrados conflitos", "info"), 0);
+        return prev;
+      }
+
+      const next = [...prev];
+      // Keep track of how many "new" unique names we've introduced globally in this batch
+      // to ensure getNextPseudonym always moves forward
+      let extraNamesCount = 0;
+
+      conflicts.forEach(pseudonym => {
+        const groups = Array.from(pToGroups.get(pseudonym) || []);
+        // Keep the first group with this pseudonym, change the others
+        for (let i = 1; i < groups.length; i++) {
+          const groupToChange = groups[i];
+          
+          // Find an entity in this group to get the type
+          const sampleEntity = next.find(e => (e.groupId && e.groupId === groupToChange) || (!e.groupId && `single-${e.id}` === groupToChange));
+          if (!sampleEntity) continue;
+          
+          const type = sampleEntity.type;
+          
+          // Find a new unique pseudonym
+          let newP = "";
+          let foundUnique = false;
+          let safety = 0;
+          
+          while (!foundUnique && safety < 200) {
+            extraNamesCount++;
+            safety++;
+            
+            // Create dummies to force getNextPseudonym to give us a higher count
+            const dummies = Array.from({ length: extraNamesCount }, (_, k) => ({
+              id: `temp-${k}`,
+              original: `TEMP_UNIQUE_NAME_${type}_${k}`,
+              type,
+              pseudonym: '',
+              enabled: true
+            } as PIIEntity));
+            
+            newP = getNextPseudonym(type, [...next, ...dummies]);
+            
+            // Ensure it doesn't conflict with existing ones in 'next'
+            if (!next.some(e => e.pseudonym === newP)) {
+              foundUnique = true;
+            }
+          }
+
+          // Update all entities in this group
+          next.forEach((e, idx) => {
+            const currentGroupKey = e.groupId || `single-${e.id}`;
+            if (currentGroupKey === groupToChange) {
+              next[idx] = { ...e, pseudonym: newP, treated: true };
+            }
+          });
+        }
+      });
+
+      setTimeout(() => {
+        pushToHistory(next, files);
+        showToast("Conflitos de pseudónimos resolvidos", "success");
+      }, 0);
+      
+      return next;
+    });
+  };
+
+  const handleFixSingleConflict = (entity: PIIEntity) => {
+    setEntities(prev => {
+      const type = entity.type;
+      const groupKey = entity.groupId || `single-${entity.id}`;
+      
+      let newP = "";
+      let extra = 0;
+      let found = false;
+      
+      while (!found && extra < 100) {
+        extra++;
+        const dummies = Array.from({ length: extra }, (_, k) => ({
+          id: `temp-${k}`,
+          original: `TEMP_SINGLE_FIX_${k}`,
+          type,
+          pseudonym: '',
+          enabled: true
+        } as PIIEntity));
+        
+        newP = getNextPseudonym(type, [...prev, ...dummies]);
+        if (!prev.some(e => e.pseudonym === newP)) {
+          found = true;
+        }
+      }
+      
+      const next = prev.map(e => {
+        const currentGroupKey = e.groupId || `single-${e.id}`;
+        if (currentGroupKey === groupKey) {
+          return { ...e, pseudonym: newP, treated: true };
+        }
+        return e;
+      });
+      
+      setTimeout(() => {
+        pushToHistory(next, files);
+        showToast(`Novo pseudónimo atribuído a ${entity.original}`, "success");
+      }, 0);
+      
+      return next;
+    });
+  };
+
   const handleExportExceptions = () => {
     const blob = new Blob([JSON.stringify(globalKnowledge, null, 2)], { type: 'application/json' });
     saveAs(blob, 'conhecimento_global.json');
@@ -1219,6 +1402,32 @@ export default function App() {
     const matchesIgnored = hideIgnored ? !e.ignored : true;
     return matchesSearch && matchesType && matchesIgnored;
   });
+
+  const pseudonymAnalysis = useMemo(() => {
+    const pToO = new Map<string, Set<string>>();
+    const pToGroups = new Map<string, Set<string>>();
+    
+    entities.forEach(e => {
+      if (e.ignored || !e.enabled) return;
+      const p = e.pseudonym.trim();
+      if (!p) return;
+      
+      const normalizedOriginal = e.original.toLowerCase().trim();
+      if (!pToO.has(p)) pToO.set(p, new Set());
+      pToO.get(p)!.add(normalizedOriginal);
+      
+      const groupKey = e.groupId || `single-${e.id}`;
+      if (!pToGroups.has(p)) pToGroups.set(p, new Set());
+      pToGroups.get(p)!.add(groupKey);
+    });
+    
+    const conflicts = new Set<string>();
+    pToGroups.forEach((groups, pseudonym) => {
+      if (groups.size > 1) conflicts.add(pseudonym);
+    });
+    
+    return { conflicts, pToO, pToGroups };
+  }, [entities]);
 
   const groupedEntities = filteredEntities.reduce((acc, entity) => {
     const key = entity.groupId || `single-${entity.id}`;
@@ -1590,7 +1799,13 @@ export default function App() {
                   <div className="flex-1 border-r border-gray-100 flex flex-col">
                     <div className="p-2 bg-gray-100/50 text-[10px] font-bold text-gray-500 uppercase tracking-wider text-center">Original</div>
                     <div className="flex-1 p-6 overflow-y-auto font-mono text-sm whitespace-pre-wrap text-gray-600 bg-white">
-                      {selectedFileId ? files.find(f => f.id === selectedFileId)?.content || "Sem conteúdo" : "Selecione um ficheiro para visualizar"}
+                      {selectedFileId ? (
+                        <HighlightText 
+                          text={files.find(f => f.id === selectedFileId)?.content || ""} 
+                          entities={entities} 
+                          mode="original" 
+                        />
+                      ) : "Selecione um ficheiro para visualizar"}
                     </div>
                   </div>
                   
@@ -1598,7 +1813,13 @@ export default function App() {
                   <div className="flex-1 flex flex-col">
                     <div className="p-2 bg-indigo-50 text-[10px] font-bold text-indigo-500 uppercase tracking-wider text-center">Anonimizado</div>
                     <div className="flex-1 p-6 overflow-y-auto font-mono text-sm whitespace-pre-wrap text-gray-900 bg-white">
-                      {selectedFileId ? anonymizeText(files.find(f => f.id === selectedFileId)?.content || "", entities) : "Selecione um ficheiro para visualizar"}
+                      {selectedFileId ? (
+                        <HighlightText 
+                          text={anonymizeText(files.find(f => f.id === selectedFileId)?.content || "", entities)} 
+                          entities={entities} 
+                          mode="anonymized" 
+                        />
+                      ) : "Selecione um ficheiro para visualizar"}
                     </div>
                   </div>
                 </div>
@@ -1733,15 +1954,31 @@ export default function App() {
           </div>
 
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <h2 className="text-lg font-bold">Elementos Detetados ({filteredEntities.length})</h2>
-              {filteredEntities.length > 0 && (
-                <button 
-                  onClick={toggleSelectAllFiltered}
-                  className="text-xs font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1 bg-indigo-50 px-2 py-1 rounded-md transition-colors"
-                >
-                  {filteredEntities.every(e => selectedIds.has(e.id)) ? 'Desmarcar Todos' : 'Selecionar Todos'}
-                </button>
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-4">
+                <h2 className="text-lg font-bold">Elementos Detetados ({filteredEntities.length})</h2>
+                {filteredEntities.length > 0 && (
+                  <button 
+                    onClick={toggleSelectAllFiltered}
+                    className="text-xs font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1 bg-indigo-50 px-2 py-1 rounded-md transition-colors"
+                  >
+                    {filteredEntities.every(e => selectedIds.has(e.id)) ? 'Desmarcar Todos' : 'Selecionar Todos'}
+                  </button>
+                )}
+              </div>
+              {pseudonymAnalysis.conflicts.size > 0 && (
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2 text-red-600 animate-pulse">
+                    <AlertCircle className="w-4 h-4" />
+                    <span className="text-xs font-bold">Atenção: Existem {pseudonymAnalysis.conflicts.size} pseudónimos duplicados para nomes diferentes!</span>
+                  </div>
+                  <button 
+                    onClick={handleFixAllConflicts}
+                    className="text-[10px] font-bold text-red-700 bg-red-50 hover:bg-red-100 px-2 py-0.5 rounded border border-red-200 w-fit transition-colors"
+                  >
+                    Corrigir Todos Automaticamente
+                  </button>
+                </div>
               )}
             </div>
             <div className="flex items-center gap-2">
@@ -1807,7 +2044,26 @@ export default function App() {
                             Grupo: {group[0].original}
                             {isProcessed && <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />}
                           </h3>
-                          <p className="text-xs text-gray-500">{group.length} ocorrências • {group[0].pseudonym}</p>
+                          <div className="text-xs text-gray-500 flex items-center gap-1">
+                            {group.length} ocorrências • {group[0].pseudonym}
+                            {pseudonymAnalysis.conflicts.has(group[0].pseudonym.trim()) && (
+                              <div className="flex items-center gap-1">
+                                <AlertCircle 
+                                  className="w-3 h-3 text-red-500" 
+                                  title={`Aviso: Este pseudónimo também está a ser usado para: ${Array.from(pseudonymAnalysis.pToO.get(group[0].pseudonym.trim()) || []).filter(o => o !== group[0].original.toLowerCase().trim()).join(', ')}`} 
+                                />
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleFixSingleConflict(group[0]);
+                                  }}
+                                  className="text-[8px] bg-red-50 text-red-600 hover:bg-red-100 px-1 py-0.5 rounded border border-red-200 font-bold"
+                                >
+                                  Corrigir
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -1877,16 +2133,34 @@ export default function App() {
                                 )}
                               </span>
                             </div>
-                            <div className="flex items-center gap-2">
-                              <input 
-                                type="text"
-                                value={entity.pseudonym}
-                                onChange={(e) => updatePseudonym(entity.id, e.target.value)}
-                                className="text-xs font-mono bg-gray-100 px-2 py-1 rounded border border-transparent focus:border-indigo-300 focus:bg-white outline-none w-32"
-                              />
-                              {entity.treated && <CheckCircle2 className="w-3 h-3 text-green-500" />}
-                              {entity.ignored && <EyeOff className="w-3 h-3 text-gray-400" />}
-                            </div>
+                              <div className="flex items-center gap-2">
+                                <input 
+                                  type="text"
+                                  value={entity.pseudonym}
+                                  onChange={(e) => updatePseudonym(entity.id, e.target.value)}
+                                  className={`text-xs font-mono bg-gray-100 px-2 py-1 rounded border outline-none w-32 ${
+                                    pseudonymAnalysis.conflicts.has(entity.pseudonym.trim()) 
+                                      ? 'border-red-300 bg-red-50 focus:border-red-500' 
+                                      : 'border-transparent focus:border-indigo-300 focus:bg-white'
+                                  }`}
+                                />
+                                {pseudonymAnalysis.conflicts.has(entity.pseudonym.trim()) && (
+                                  <div className="flex items-center gap-1">
+                                    <AlertCircle 
+                                      className="w-3.5 h-3.5 text-red-500" 
+                                      title={`Aviso: Este pseudónimo também está a ser usado para: ${Array.from(pseudonymAnalysis.pToO.get(entity.pseudonym.trim()) || []).filter(o => o !== entity.original.toLowerCase().trim()).join(', ')}`} 
+                                    />
+                                    <button 
+                                      onClick={() => handleFixSingleConflict(entity)}
+                                      className="text-[9px] bg-red-50 text-red-600 hover:bg-red-100 px-1.5 py-0.5 rounded border border-red-200 font-bold"
+                                    >
+                                      Corrigir
+                                    </button>
+                                  </div>
+                                )}
+                                {entity.treated && <CheckCircle2 className="w-3 h-3 text-green-500" />}
+                                {entity.ignored && <EyeOff className="w-3 h-3 text-gray-400" />}
+                              </div>
                           </div>
 
                           <div className="flex items-center gap-1">
