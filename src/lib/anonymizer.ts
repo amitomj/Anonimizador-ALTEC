@@ -76,7 +76,9 @@ const ENTITY_BLACKLIST = [
   'RUA', 'TRAVESSA', 'LARGO', 'BECO', 'CALCADA', 'ESCADA', 'PATIO', 'QUINTA',
   'HERDADE', 'CASAL', 'LUGAR', 'ALDEIA', 'VILA', 'CIDADE', 'CONCELHO', 'DISTRITO',
   'REGIAO', 'PAIS', 'CONTINENTE', 'MUNDO', 'ABRIL', 'DOMINGO', 'NORMA', 'FACTO', 'PROVADO',
-  'COMISSAO', 'TRABALHADORES', 'SUCURSAL', 'SOCIEDADE'
+  'COMISSAO', 'TRABALHADORES', 'SUCURSAL', 'SOCIEDADE', 'RELATORIO', 'ADVOGADO', 'ADVOGADA',
+  'CEDULA', 'PROCESSO', 'PROCEDIMENTO', 'REQUERIMENTO', 'DESPACHO', 'SENTENCA', 'ACORDAO',
+  'PAGINA', 'FOLHA', 'DOCUMENTO', 'ANEXO', 'CERTIDAO', 'NOTIFICACAO', 'CITACAO', 'EDITAL'
 ];
 
 const PII_PATTERNS = {
@@ -103,12 +105,14 @@ const NAME_TITLES = [
   'Colega', 'Autor', 'Autora', 'Réu', 'Ré', 'Mandatário', 'Advogado', 'Advogada', 
   'Dr\\.', 'Dra\\.', 'Sr\\.', 'Sra\\.', 'Eng\\.', 'Prof\\.', 'Juiz', 'Desembargador', 'Relator', 
   'Relatora', 'Venerando', 'Tribunal', 'Relação', 'Cfr\\.', 'In', 'Págs\\.', 'Pág\\.', 'Artigo', 'Art\\.', 'N\\.º', 
-  'Processo', 'Proc\\.', 'Data', 'Hora', 'Local', 'Sede', 'Empresa', 'Sociedade'
+  'Processo', 'Proc\\.', 'Data', 'Hora', 'Local', 'Sede', 'Empresa', 'Sociedade', 'Trabalhador', 'Trabalhadora',
+  'Funcionário', 'Funcionária', 'Agente', 'Cabo', 'Guarda', 'Sargento', 'Tenente', 'Capitão', 'Major', 'Coronel', 'General',
+  'Doutor', 'Doutora', 'Senhor', 'Senhora', 'O', 'A', 'Os', 'As', 'Um', 'Uma', 'Página', 'Folha', 'Documento'
 ];
 
 const NAME_CLEAN_REGEX = new RegExp(`^\\s*(?:${NAME_TITLES.join('|')})\\s+|\\s+(?:${NAME_TITLES.join('|')})\\s*$`, 'gi');
 const CONJUNCTION_CLEAN_REGEX = /^\s*(?:e|ou|com|contra)\s+|\s+(?:e|ou|com|contra)\s*$/gi;
-const PUNCTUATION_CLEAN_REGEX = /^[.,;:\-\s]+|[.,;:\-\s]+$/g;
+const PUNCTUATION_CLEAN_REGEX = /^[.,;:\-\s\(\)\[\]]+|[.,;:\-\s\(\)\[\]]+$/g;
 
 export function isValidNIF(nif: string): boolean {
   const s = nif.replace(/\s/g, '');
@@ -169,7 +173,9 @@ export function cleanName(name: string): string {
     prev = cleaned;
     cleaned = cleaned.replace(NAME_CLEAN_REGEX, ' ');
     cleaned = cleaned.replace(CONJUNCTION_CLEAN_REGEX, ' ');
-    cleaned = cleaned.replace(PUNCTUATION_CLEAN_REGEX, '');
+    // Handle punctuation at start/end, but be careful with abbreviations like "Dr."
+    // We only remove punctuation if it's not part of a known title
+    cleaned = cleaned.replace(/^[.,;:\-\s\(\)\[\]]+|[.,;:\-\s\(\)\[\]]+$/g, '');
     cleaned = cleaned.trim();
   } while (cleaned !== prev && cleaned.length > 0);
 
@@ -354,20 +360,20 @@ export function scanText(text: string, fileId: string, existingEntities: PIIEnti
       const isJudgeMatch = judges.some(judgeName => {
         const judgeWords = judgeName.split(/\s+/).filter(w => w.length > 2);
         if (judgeWords.length < 2) return false;
-        if (nameWords[0] !== judgeWords[0]) return false;
-        return nameWords.slice(1).some(w => judgeWords.slice(1).includes(w));
+        // Check if at least 2 significant words match
+        const common = nameWords.filter(w => judgeWords.includes(w));
+        return common.length >= 2;
       });
 
       if (isJudgeMatch) {
-        // The user specifically asked to identify as AUTOR if it matches a judge's first name + one more
-        identifiedType = 'AUTOR';
+        identifiedType = 'JUIZ';
       } else {
         // Rule: Identify as AUTOR if matches an author (first name + one more)
         const isAuthorMatch = authors.some(authorName => {
           const authorWords = authorName.split(/\s+/).filter(w => w.length > 2);
           if (authorWords.length < 2) return false;
-          if (nameWords[0] !== authorWords[0]) return false;
-          return nameWords.slice(1).some(w => authorWords.slice(1).includes(w));
+          const common = nameWords.filter(w => authorWords.includes(w));
+          return common.length >= 2;
         });
 
         if (isAuthorMatch) {
@@ -439,16 +445,27 @@ export function splitEntity(entity: PIIEntity, entities: PIIEntity[]): PIIEntity
 }
 
 export function groupSimilarEntities(entities: PIIEntity[], isRelated: boolean = true): PIIEntity[] {
-  // Reset groups first
-  const newEntities = entities.map(e => ({ ...e, groupId: undefined }));
-  const groups: Record<string, { id: string, pseudonym: string, treated: boolean }> = {};
-
-  // 1. Group by exact match (case-insensitive) for all types
-  // Sort to prioritize 'treated' entities as group heads
-  const sortedEntities = [...newEntities].sort((a, b) => (b.treated ? 1 : 0) - (a.treated ? 1 : 0));
+  // 1. Identify manual groups and preserve them
+  const newEntities = entities.map(e => ({ 
+    ...e, 
+    groupId: e.groupId?.startsWith('manual-group-') ? e.groupId : undefined 
+  }));
+  
+  // 2. Group by exact match (case-insensitive) for all types
+  const groups: Record<string, { id: string, pseudonym: string, treated: boolean, type: string }> = {};
+  
+  // Sort: Manual groups first, then treated, then others
+  const sortedEntities = [...newEntities].sort((a, b) => {
+    const aManual = a.groupId?.startsWith('manual-group-') ? 1 : 0;
+    const bManual = b.groupId?.startsWith('manual-group-') ? 1 : 0;
+    if (aManual !== bManual) return bManual - aManual;
+    
+    const aTreated = a.treated ? 1 : 0;
+    const bTreated = b.treated ? 1 : 0;
+    return bTreated - aTreated;
+  });
   
   sortedEntities.forEach(entity => {
-    // If not related, include fileId in the key to prevent cross-document grouping
     const fileId = entity.fileIds?.[0] || 'unknown';
     const key = isRelated 
       ? `${entity.type}:${entity.original.toLowerCase().trim()}`
@@ -456,14 +473,21 @@ export function groupSimilarEntities(entities: PIIEntity[], isRelated: boolean =
 
     if (!groups[key]) {
       groups[key] = { 
-        id: `group-${entity.id}`, 
+        id: entity.groupId || `group-${entity.id}`, 
         pseudonym: entity.pseudonym,
-        treated: entity.treated || false
+        treated: entity.treated || false,
+        type: entity.type
       };
-    } else if (entity.treated && !groups[key].treated) {
-      // If we find a treated entity for an existing group, update the group's pseudonym
-      groups[key].pseudonym = entity.pseudonym;
-      groups[key].treated = true;
+    } else {
+      if (entity.groupId?.startsWith('manual-group-') && !groups[key].id.startsWith('manual-group-')) {
+        groups[key].id = entity.groupId;
+        groups[key].pseudonym = entity.pseudonym;
+        groups[key].treated = true;
+      } else if (entity.treated && !groups[key].treated) {
+        groups[key].pseudonym = entity.pseudonym;
+        groups[key].treated = true;
+        groups[key].type = entity.type;
+      }
     }
     
     const originalEntity = newEntities.find(e => e.id === entity.id);
@@ -473,48 +497,109 @@ export function groupSimilarEntities(entities: PIIEntity[], isRelated: boolean =
     }
   });
 
-  // 2. Special handling for NAMES (partial matches and shared words)
-  const nameEntities = newEntities.filter(e => e.type === 'NOME' || e.type === 'JUIZ' || e.type === 'AUTOR');
-  
-  // Helper to get significant words (length > 2)
+  // 3. Special handling for NAMES (partial matches and shared words)
+  const nameEntities = newEntities.filter(e => e.type === 'NOME' || e.type === 'AUTOR' || e.type === 'JUIZ');
   const getWords = (text: string) => 
-    text.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    text.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !NAME_TITLES.some(t => new RegExp(`^${t.replace('.', '\\.')}$`, 'i').test(w)));
 
-  nameEntities.forEach(entity => {
-    const words = getWords(entity.original);
-    if (words.length < 2) return;
+  const VERY_COMMON_NAMES = new Set(['maria', 'jose', 'manuel', 'antonio', 'joao', 'francisco', 'carlos', 'paulo', 'pedro', 'luis', 'ana', 'isabel', 'teresa', 'margarida', 'silva', 'santos', 'ferreira', 'pereira', 'oliveira', 'costa', 'rodrigues', 'martins', 'jesus']);
 
-    // Find other names that share at least 2 words or follow the judge matching rule
-    const match = nameEntities.find(other => {
-      if (other.id === entity.id) return false;
-      // If not related, only match within the same file
-      if (!isRelated && other.fileIds?.[0] !== entity.fileIds?.[0]) return false;
-      
-      const otherWords = getWords(other.original);
-      
-      // If both are judges, or one is a judge/author and they share first name + one more
-      if ((entity.type === 'JUIZ' || other.type === 'JUIZ' || entity.type === 'AUTOR' || other.type === 'AUTOR') && words.length >= 2 && otherWords.length >= 2) {
-        if (words[0] === otherWords[0]) {
-          const otherNamesMatch = words.slice(1).some(w => otherWords.slice(1).includes(w));
-          if (otherNamesMatch) return true;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < nameEntities.length; i++) {
+      for (let j = i + 1; j < nameEntities.length; j++) {
+        const e1 = nameEntities[i];
+        const e2 = nameEntities[j];
+        
+        if (e1.groupId === e2.groupId && e1.groupId !== undefined) continue;
+        if (!isRelated && e1.fileIds?.[0] !== e2.fileIds?.[0]) continue;
+
+        const w1 = getWords(e1.original);
+        const w2 = getWords(e2.original);
+        if (w1.length === 0 || w2.length === 0) continue;
+
+        let isMatch = false;
+        
+        // Exact match (already handled by step 2, but good for safety)
+        if (e1.original.toLowerCase().trim() === e2.original.toLowerCase().trim()) {
+          isMatch = true;
+        }
+
+        if (!isMatch) {
+          const common = w1.filter(w => w2.includes(w));
+          const commonNonGeneric = common.filter(w => !VERY_COMMON_NAMES.has(w));
+          
+          const similarity = common.length / Math.max(w1.length, w2.length);
+          
+          // Strict rules for grouping:
+          // 1. Very high similarity (e.g. "Maria Silva" and "Maria S. Silva")
+          if (similarity >= 0.8) {
+            isMatch = true;
+          } 
+          // 2. One is a subset of the other
+          else if (w1.every(w => w2.includes(w)) || w2.every(w => w1.includes(w))) {
+            // Must share at least 2 words AND at least one non-generic word
+            if (common.length >= 2 && commonNonGeneric.length >= 1) {
+              // And the difference shouldn't be massive (max 2 words difference)
+              if (Math.abs(w1.length - w2.length) <= 2) {
+                isMatch = true;
+              }
+            }
+          }
+          // 3. Share many words including multiple non-generic ones
+          else if (common.length >= 3 && commonNonGeneric.length >= 2) {
+            isMatch = true;
+          }
+        }
+
+        // Check for separators - if one has " e " and the other doesn't, they are likely different 
+        // (one is a pair, the other is an individual)
+        const hasSeparator1 = e1.original.toLowerCase().includes(' e ');
+        const hasSeparator2 = e2.original.toLowerCase().includes(' e ');
+        if (hasSeparator1 !== hasSeparator2) isMatch = false;
+
+        if (isMatch) {
+          const g1 = e1.groupId;
+          const g2 = e2.groupId;
+          
+          if (g1 && g2 && g1 !== g2) {
+            // Don't automatically merge two different manual groups
+            if (g1.startsWith('manual-group-') && g2.startsWith('manual-group-')) continue;
+
+            // Merge groups, prioritizing manual ones
+            const targetG = g1.startsWith('manual-group-') ? g1 : (g2.startsWith('manual-group-') ? g2 : g1);
+            const sourceG = targetG === g1 ? g2 : g1;
+            
+            const p1 = e1.treated ? e1.pseudonym : (e2.treated ? e2.pseudonym : (e1.original.length >= e2.original.length ? e1.pseudonym : e2.pseudonym));
+            newEntities.forEach(e => {
+              if (e.groupId === sourceG) {
+                e.groupId = targetG;
+                e.pseudonym = p1;
+              }
+            });
+            changed = true;
+          } else if (g1 || g2) {
+            const targetG = g1 || g2;
+            const targetP = (g1 ? e1.pseudonym : e2.pseudonym);
+            e1.groupId = targetG;
+            e1.pseudonym = targetP;
+            e2.groupId = targetG;
+            e2.pseudonym = targetP;
+            changed = true;
+          } else {
+            const newG = `group-${e1.id}`;
+            const newP = e1.original.length >= e2.original.length ? e1.pseudonym : e2.pseudonym;
+            e1.groupId = newG;
+            e1.pseudonym = newP;
+            e2.groupId = newG;
+            e2.pseudonym = newP;
+            changed = true;
+          }
         }
       }
-
-      const commonWords = words.filter(w => otherWords.includes(w));
-      return commonWords.length >= 2;
-    });
-
-    if (match) {
-      // If either has a groupId, use it. If both have, use the one from the 'treated' or longer one.
-      const targetGroupId = match.groupId || entity.groupId || `group-${match.id}`;
-      const targetPseudonym = match.pseudonym || entity.pseudonym;
-      
-      entity.groupId = targetGroupId;
-      entity.pseudonym = targetPseudonym;
-      match.groupId = targetGroupId;
-      match.pseudonym = targetPseudonym;
     }
-  });
+  }
 
   return newEntities;
 }

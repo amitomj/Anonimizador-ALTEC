@@ -5,7 +5,7 @@ import {
   History, Link, ChevronDown, ChevronRight, Search, Filter,
   MoreVertical, Copy, CheckCircle2, User, MapPin, Phone, 
   CreditCard, Mail, Hash, Briefcase, Scale, Trash, RotateCcw, RotateCw,
-  Shield, Save, FolderOpen, XCircle
+  Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjs from 'pdfjs-dist';
@@ -233,12 +233,26 @@ export default function App() {
   const [showMergeModal, setShowMergeModal] = useState(false);
   const [showExceptionsModal, setShowExceptionsModal] = useState(false);
   const [exceptionsTab, setExceptionsTab] = useState<'EXCECAO' | 'JUIZ' | 'AUTOR'>('EXCECAO');
+  const [knowledgeSearch, setKnowledgeSearch] = useState('');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [splitView, setSplitView] = useState(false);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+  const [confirmingClear, setConfirmingClear] = useState(false);
   const [history, setHistory] = useState<{ entities: PIIEntity[], files: FileData[] }[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const isHistoryAction = useRef(false);
+
+  const leftScrollRef = useRef<HTMLDivElement>(null);
+  const rightScrollRef = useRef<HTMLDivElement>(null);
+
+  const handleSyncScroll = (source: 'left' | 'right') => {
+    const sourceEl = source === 'left' ? leftScrollRef.current : rightScrollRef.current;
+    const targetEl = source === 'left' ? rightScrollRef.current : leftScrollRef.current;
+    
+    if (sourceEl && targetEl && targetEl.scrollTop !== sourceEl.scrollTop) {
+      targetEl.scrollTop = sourceEl.scrollTop;
+    }
+  };
 
   // Auto-hide toast
   useEffect(() => {
@@ -585,13 +599,25 @@ export default function App() {
     
     const selectedEntities = entities.filter(e => selectedIds.has(e.id));
     const groupId = `manual-group-${Date.now()}`;
-    const basePseudonym = selectedEntities[0].pseudonym;
+    
+    // Pick the best pseudonym: from a treated entity, or the longest name
+    const sorted = [...selectedEntities].sort((a, b) => {
+      if (a.treated && !b.treated) return -1;
+      if (!a.treated && b.treated) return 1;
+      return b.original.length - a.original.length;
+    });
+    const basePseudonym = sorted[0].pseudonym;
 
-    setEntities(prev => prev.map(e => 
-      selectedIds.has(e.id) ? { ...e, groupId, pseudonym: basePseudonym } : e
-    ));
+    setEntities(prev => {
+      const next = prev.map(e => 
+        selectedIds.has(e.id) ? { ...e, groupId, pseudonym: basePseudonym, treated: true } : e
+      );
+      setTimeout(() => pushToHistory(next, files), 0);
+      return next;
+    });
     setCollapsedGroups(prev => new Set(prev).add(groupId));
     setSelectedIds(new Set());
+    showToast("Elementos agrupados e associados com sucesso.", "success");
   };
 
   const handleMergeToGroup = (targetGroupId: string) => {
@@ -665,23 +691,112 @@ export default function App() {
     if (selectedIds.size === 0) return;
     
     setEntities(prev => {
-      const next = [...prev];
-      const selectedEntities = next.filter(e => selectedIds.has(e.id));
+      const selectedEntities = prev.filter(e => selectedIds.has(e.id));
+      const groupIds = new Set(selectedEntities.map(e => e.groupId).filter(Boolean) as string[]);
       
-      // Group selected entities by their original text to ensure consistent pseudonyms
+      const byGroup: Record<string, string> = {};
       const byOriginal: Record<string, string> = {};
       
-      return next.map(e => {
-        if (selectedIds.has(e.id)) {
-          if (!byOriginal[e.original.toLowerCase()]) {
-            byOriginal[e.original.toLowerCase()] = getNextPseudonym(newType, next.filter(ent => !selectedIds.has(ent.id)));
+      const next = prev.map(e => {
+        const isSelected = selectedIds.has(e.id);
+        const isInSelectedGroup = e.groupId && groupIds.has(e.groupId);
+        
+        if (isSelected || isInSelectedGroup) {
+          if (e.groupId) {
+            if (!byGroup[e.groupId]) {
+              // Generate a pseudonym that isn't used in the new type (excluding this group's current members)
+              byGroup[e.groupId] = getNextPseudonym(newType, prev.filter(ent => ent.groupId !== e.groupId));
+            }
+            return { ...e, type: newType, pseudonym: byGroup[e.groupId], treated: true };
+          } else {
+            const lowerOrig = e.original.toLowerCase();
+            if (!byOriginal[lowerOrig]) {
+              byOriginal[lowerOrig] = getNextPseudonym(newType, prev.filter(ent => ent.original.toLowerCase() !== lowerOrig));
+            }
+            return { ...e, type: newType, pseudonym: byOriginal[lowerOrig], treated: true };
           }
-          return { ...e, type: newType, pseudonym: byOriginal[e.original.toLowerCase()], treated: true };
         }
         return e;
       });
+
+      setTimeout(() => pushToHistory(next, files), 0);
+      return next;
     });
+    
     showToast(`${selectedIds.size} elementos alterados para ${newType}.`, "success");
+    setSelectedIds(new Set());
+  };
+
+  const reclassifyEntities = () => {
+    setEntities(prev => {
+      let changed = false;
+      const next = prev.map(entity => {
+        if (entity.type === 'NOME') {
+          const lower = entity.original.toLowerCase().trim();
+          const knowledgeType = globalKnowledge[lower];
+          
+          if (knowledgeType && knowledgeType !== 'EXCECAO' && knowledgeType !== entity.type) {
+            changed = true;
+            return {
+              ...entity,
+              type: knowledgeType,
+              pseudonym: getNextPseudonym(knowledgeType, prev),
+              treated: true
+            };
+          }
+
+          // Advanced check for partial matches in globalKnowledge
+          const judges = Object.entries(globalKnowledge).filter(([_, t]) => t === 'JUIZ').map(([n]) => n.toLowerCase());
+          const authors = Object.entries(globalKnowledge).filter(([_, t]) => t === 'AUTOR').map(([n]) => n.toLowerCase());
+          const nameWords = lower.split(/\s+/).filter(w => w.length > 2);
+
+          if (nameWords.length >= 2) {
+            const isJudgeMatch = judges.some(judgeName => {
+              const judgeWords = judgeName.split(/\s+/).filter(w => w.length > 2);
+              if (judgeWords.length < 2) return false;
+              const common = nameWords.filter(w => judgeWords.includes(w));
+              return common.length >= 2;
+            });
+
+            if (isJudgeMatch) {
+              changed = true;
+              return {
+                ...entity,
+                type: 'JUIZ',
+                pseudonym: getNextPseudonym('JUIZ', prev),
+                treated: true
+              };
+            }
+
+            const isAuthorMatch = authors.some(authorName => {
+              const authorWords = authorName.split(/\s+/).filter(w => w.length > 2);
+              if (authorWords.length < 2) return false;
+              const common = nameWords.filter(w => authorWords.includes(w));
+              return common.length >= 2;
+            });
+
+            if (isAuthorMatch) {
+              changed = true;
+              return {
+                ...entity,
+                type: 'AUTOR',
+                pseudonym: getNextPseudonym('AUTOR', prev),
+                treated: true
+              };
+            }
+          }
+        }
+        return entity;
+      });
+
+      if (changed) {
+        const grouped = groupSimilarEntities(next, isRelated);
+        setTimeout(() => pushToHistory(grouped, files), 0);
+        showToast("Elementos reclassificados com base no conhecimento global.", "success");
+        return grouped;
+      }
+      return prev;
+    });
   };
 
   const handleUpdateGroupType = (groupId: string, newType: string) => {
@@ -691,12 +806,15 @@ export default function App() {
       
       const newPseudonym = getNextPseudonym(newType, prev.filter(e => e.groupId !== groupId));
       
-      return prev.map(e => {
+      const next = prev.map(e => {
         if (e.groupId === groupId) {
           return { ...e, type: newType, pseudonym: newPseudonym, treated: true };
         }
         return e;
       });
+
+      setTimeout(() => pushToHistory(next, files), 0);
+      return next;
     });
     showToast(`Categoria do grupo alterada para ${newType}.`, "success");
   };
@@ -705,13 +823,25 @@ export default function App() {
     const entityToUpdate = entities.find(e => e.id === id);
     if (!entityToUpdate) return;
 
+    // If type is changing, update the pseudonym too
+    if (updates.type && updates.type !== entityToUpdate.type) {
+      updates.pseudonym = getNextPseudonym(updates.type, entities.filter(e => e.id !== id));
+      updates.treated = true;
+    }
+
     const updated = { ...entityToUpdate, ...updates };
     const newlySelectedIds: string[] = [];
     
     const nextEntities = entities.map(e => {
       if (e.id === id) return updated;
+
+      // 1. Automatic correction for identical elements (User Request)
+      // If the original text is updated, apply the same change to all identical elements
+      if (updates.original !== undefined && e.original === entityToUpdate.original) {
+        return { ...e, original: updates.original, treated: true };
+      }
       
-      // Auto-expansion logic for group members when original text is updated
+      // 2. Auto-expansion logic for group members when original text is updated
       if (updates.original && updated.groupId && e.groupId === updated.groupId) {
         const words = updated.original.split(/\s+/).filter(w => w.length > 0);
         let curOrig = e.original;
@@ -770,9 +900,62 @@ export default function App() {
     }
   };
 
+  const handleSplitAllAndEntities = () => {
+    setEntities(prev => {
+      const next: PIIEntity[] = [];
+      let splitCount = 0;
+      const affectedGroupIds = new Set<string>();
+
+      prev.forEach(entity => {
+        if ((entity.type === 'NOME' || entity.type === 'AUTOR' || entity.type === 'JUIZ') && 
+            entity.original.includes(' e ') && 
+            !entity.original.toLowerCase().startsWith('e ') && 
+            !entity.original.toLowerCase().endsWith(' e')) {
+          
+          const parts = entity.original.split(/\s+e\s+/i).map(p => p.trim()).filter(p => p.length > 2);
+          if (parts.length >= 2) {
+            splitCount++;
+            if (entity.groupId) affectedGroupIds.add(entity.groupId);
+
+            parts.forEach(part => {
+              const id = Math.random().toString(36).substring(7);
+              const pseudonym = getNextPseudonym(entity.type, [...prev, ...next]);
+              next.push({
+                ...entity,
+                id,
+                original: part,
+                pseudonym,
+                groupId: undefined,
+                treated: false
+              });
+            });
+            return;
+          }
+        }
+        next.push(entity);
+      });
+
+      if (splitCount > 0) {
+        // Release members of affected groups so they can find their correct homes
+        let finalNext = next.map(e => (e.groupId && affectedGroupIds.has(e.groupId)) ? { ...e, groupId: undefined } : e);
+        
+        // Re-group everything
+        finalNext = groupSimilarEntities(finalNext, isRelated);
+
+        showToast(`${splitCount} nomes compostos foram divididos e grupos re-organizados.`, "success");
+        setTimeout(() => pushToHistory(finalNext, files), 0);
+        return finalNext;
+      } else {
+        showToast("Nenhum nome composto com 'e' foi encontrado.", "info");
+        return prev;
+      }
+    });
+  };
   const handleManualSplit = (entity: PIIEntity, separator: string | RegExp) => {
     const parts = entity.original.split(separator).map(p => p.trim()).filter(p => p.length > 0);
     if (parts.length < 2) return;
+
+    const affectedGroupId = entity.groupId;
 
     const newEntities = parts.map(part => {
       const id = Math.random().toString(36).substring(7);
@@ -782,15 +965,109 @@ export default function App() {
         id,
         original: part,
         pseudonym,
-        groupId: undefined
+        groupId: undefined,
+        treated: false
       };
     });
 
     setEntities(prev => {
-      const filtered = prev.filter(e => e.id !== entity.id);
-      return [...filtered, ...newEntities];
+      let next = prev.filter(e => e.id !== entity.id);
+      
+      // If it was in a group, release all members of that group
+      if (affectedGroupId) {
+        next = next.map(e => e.groupId === affectedGroupId ? { ...e, groupId: undefined } : e);
+      }
+
+      next = [...next, ...newEntities];
+      
+      // Re-group
+      const grouped = groupSimilarEntities(next, isRelated);
+
+      setTimeout(() => pushToHistory(grouped, files), 0);
+      return grouped;
     });
     setEditingEntity(null);
+    showToast(`${parts.length} novos elementos criados e grupos re-organizados.`, "success");
+  };
+
+  const handleDissolveGroup = (groupId: string) => {
+    setEntities(prev => {
+      const next = prev.map(e => e.groupId === groupId ? { ...e, groupId: undefined, treated: false } : e);
+      showToast("Grupo dissolvido. Os elementos podem agora ser re-agrupados ou editados individualmente.", "success");
+      setTimeout(() => pushToHistory(next, files), 0);
+      return next;
+    });
+  };
+
+  const handleSplitGroup = (groupId: string, strategy: 'e' | 'space' = 'e') => {
+    setEntities(prev => {
+      const next: PIIEntity[] = [];
+      let splitOccurred = false;
+      
+      prev.forEach(entity => {
+        if (entity.groupId === groupId && 
+            (entity.type === 'NOME' || entity.type === 'AUTOR' || entity.type === 'JUIZ')) {
+          
+          let parts: string[] = [];
+          if (strategy === 'e' && entity.original.includes(' e ')) {
+            parts = entity.original.split(/\s+e\s+/i).map(p => p.trim()).filter(p => p.length > 2);
+          } else if (strategy === 'space' && entity.original.includes(' ')) {
+            // Heuristic: split if we have multiple capitalized sequences that look like full names
+            // For simplicity, we'll just split by double spaces or let the user decide.
+            // Let's do a more aggressive split by space but filter out short words
+            parts = entity.original.split(/\s{2,}/).map(p => p.trim()).filter(p => p.length > 2);
+            if (parts.length < 2) {
+              // Try to split by single space if it's a very long string (e.g. 4+ words)
+              const words = entity.original.split(/\s+/);
+              if (words.length >= 4) {
+                // Split in half as a guess, or just split all words
+                parts = words.map(w => w.trim()).filter(w => w.length > 2);
+              }
+            }
+          }
+
+          if (parts.length >= 2) {
+            splitOccurred = true;
+            parts.forEach(part => {
+              const id = Math.random().toString(36).substring(7);
+              const pseudonym = getNextPseudonym(entity.type, [...prev, ...next]);
+              next.push({
+                ...entity,
+                id,
+                original: part,
+                pseudonym,
+                groupId: undefined,
+                treated: false
+              });
+            });
+            return;
+          }
+        }
+        if (entity.groupId === groupId) {
+          next.push({ ...entity, groupId: undefined });
+          return;
+        }
+        next.push(entity);
+      });
+
+      if (splitOccurred) {
+        const grouped = groupSimilarEntities(next, isRelated);
+        showToast("Elementos divididos e re-organizados.", "success");
+        setTimeout(() => pushToHistory(grouped, files), 0);
+        return grouped;
+      }
+      return prev;
+    });
+  };
+
+  const handleUnlockGroup = (groupId: string) => {
+    setEntities(prev => {
+      const next = prev.map(e => e.groupId === groupId ? { ...e, groupId: undefined } : e);
+      const grouped = groupSimilarEntities(next, isRelated);
+      showToast("Grupo libertado para re-agrupamento automático.", "success");
+      setTimeout(() => pushToHistory(grouped, files), 0);
+      return grouped;
+    });
   };
 
   const addToGlobalKnowledge = (text: string, type: string = 'EXCECAO') => {
@@ -1097,11 +1374,22 @@ export default function App() {
   };
 
   const clearAll = () => {
-    pushToHistory(entities, files);
+    if (!confirmingClear) {
+      setConfirmingClear(true);
+      showToast("Clique novamente para confirmar a limpeza total do projeto.", "info");
+      setTimeout(() => setConfirmingClear(false), 4000);
+      return;
+    }
+    
     setFiles([]);
     setEntities([]);
     setSelectedIds(new Set());
-    showToast("Projeto limpo", "info");
+    setSelectedFileId(null);
+    setHistory([]);
+    setHistoryIndex(-1);
+    setConfirmingClear(false);
+    localStorage.removeItem('pii_project_state');
+    showToast("Projeto limpo. Iniciado novo projeto.", "success");
   };
 
   const handleReGroup = () => {
@@ -1568,6 +1856,40 @@ export default function App() {
                 </div>
 
                 <div className="space-y-3">
+                  <label className="block text-sm font-medium text-gray-500">Ações de Limpeza e Associação</label>
+                  <div className="flex flex-wrap gap-2">
+                    <button 
+                      onClick={() => {
+                        if (!editingEntity) return;
+                        // Remove single spaces between letters, e.g., "S i m õ e s" -> "Simões"
+                        let cleaned = editingEntity.original;
+                        for (let i = 0; i < 5; i++) {
+                          cleaned = cleaned.replace(/(\b\w)\s+(?=\w\b)/g, '$1');
+                        }
+                        cleaned = cleaned.replace(/\s+/g, ' ').trim();
+                        handleUpdateEntity(editingEntity.id, { original: cleaned });
+                        showToast("Espaços de OCR limpos.", "info");
+                      }}
+                      className="flex items-center gap-1 px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg text-xs hover:bg-amber-100 transition-colors border border-amber-200"
+                    >
+                      <Zap className="w-3 h-3" />
+                      <span>Limpar Espaços OCR</span>
+                    </button>
+                    <button 
+                      onClick={() => {
+                        if (!editingEntity) return;
+                        setShowMergeModal(true);
+                        setSelectedIds(new Set([editingEntity.id]));
+                      }}
+                      className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs hover:bg-indigo-100 transition-colors border border-indigo-200"
+                    >
+                      <Link className="w-3 h-3" />
+                      <span>Mesclar com outro...</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
                   <label className="block text-sm font-medium text-gray-500">Ações de Divisão</label>
                   <div className="flex flex-wrap gap-2">
                     <button 
@@ -1683,6 +2005,22 @@ export default function App() {
               <Shield className="w-4 h-4" />
               <span>Exceções</span>
             </button>
+
+            <button 
+              onClick={clearAll}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg font-medium transition-all ${
+                confirmingClear 
+                  ? 'bg-red-600 text-white animate-pulse' 
+                  : 'text-red-600 hover:bg-red-50'
+              }`}
+              title={confirmingClear ? "Confirmar Limpeza" : "Limpar todo o projeto e começar um novo"}
+            >
+              <Trash2 className="w-4 h-4" />
+              <span className="hidden sm:inline">
+                {confirmingClear ? "Confirmar?" : "Novo Projeto"}
+              </span>
+            </button>
+
             <button 
               onClick={handleExport}
               disabled={files.length === 0 || isProcessing}
@@ -1798,7 +2136,11 @@ export default function App() {
                   {/* Original Text */}
                   <div className="flex-1 border-r border-gray-100 flex flex-col">
                     <div className="p-2 bg-gray-100/50 text-[10px] font-bold text-gray-500 uppercase tracking-wider text-center">Original</div>
-                    <div className="flex-1 p-6 overflow-y-auto font-mono text-sm whitespace-pre-wrap text-gray-600 bg-white">
+                    <div 
+                      ref={leftScrollRef}
+                      onScroll={() => handleSyncScroll('left')}
+                      className="flex-1 p-6 overflow-y-auto font-mono text-sm whitespace-pre-wrap text-gray-600 bg-white"
+                    >
                       {selectedFileId ? (
                         <HighlightText 
                           text={files.find(f => f.id === selectedFileId)?.content || ""} 
@@ -1812,7 +2154,11 @@ export default function App() {
                   {/* Anonymized Text */}
                   <div className="flex-1 flex flex-col">
                     <div className="p-2 bg-indigo-50 text-[10px] font-bold text-indigo-500 uppercase tracking-wider text-center">Anonimizado</div>
-                    <div className="flex-1 p-6 overflow-y-auto font-mono text-sm whitespace-pre-wrap text-gray-900 bg-white">
+                    <div 
+                      ref={rightScrollRef}
+                      onScroll={() => handleSyncScroll('right')}
+                      className="flex-1 p-6 overflow-y-auto font-mono text-sm whitespace-pre-wrap text-gray-900 bg-white"
+                    >
                       {selectedFileId ? (
                         <HighlightText 
                           text={anonymizeText(files.find(f => f.id === selectedFileId)?.content || "", entities)} 
@@ -1846,6 +2192,22 @@ export default function App() {
                     Independentes
                   </button>
                 </div>
+                <button 
+                  onClick={handleSplitAllAndEntities}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 rounded-xl text-sm font-bold hover:bg-blue-100 transition-colors"
+                  title="Dividir nomes que contêm ' e ' (ex: Nome1 e Nome2)"
+                >
+                  <Scissors className="w-4 h-4" />
+                  <span>Dividir 'e'</span>
+                </button>
+                <button 
+                  onClick={reclassifyEntities}
+                  className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-sm font-bold hover:bg-emerald-100 transition-colors"
+                  title="Reclassificar nomes como Juízes ou Autores com base no conhecimento global"
+                >
+                  <Zap className="w-4 h-4" />
+                  <span>Reclassificar (Global)</span>
+                </button>
                 <button 
                   onClick={handleSuggestGroups}
                   className="flex items-center gap-2 px-4 py-2 bg-amber-50 text-amber-700 rounded-xl text-sm font-bold hover:bg-amber-100 transition-colors"
@@ -1930,7 +2292,7 @@ export default function App() {
                     className="flex items-center gap-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors border border-indigo-200"
                   >
                     <Layers className="w-3.5 h-3.5" />
-                    Agrupar
+                    Agrupar / Associar
                   </button>
                   {copiedPseudonym && (
                     <button 
@@ -2043,6 +2405,57 @@ export default function App() {
                           <h3 className="text-sm font-bold flex items-center gap-2">
                             Grupo: {group[0].original}
                             {isProcessed && <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />}
+                            {groupId.startsWith('manual-group-') && (
+                              <div className="flex items-center gap-1">
+                                <span className="text-[8px] bg-amber-50 text-amber-600 px-1 py-0.5 rounded border border-amber-200 font-bold uppercase tracking-tighter">Manual</span>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleUnlockGroup(groupId);
+                                  }}
+                                  className="p-1 hover:bg-white rounded text-amber-400 hover:text-amber-600 transition-colors"
+                                  title="Desbloquear grupo (permitir re-agrupamento automático)"
+                                >
+                                  <RotateCw className="w-3 h-3" />
+                                </button>
+                              </div>
+                            )}
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDissolveGroup(groupId);
+                                }}
+                                className="p-1 hover:bg-white rounded text-red-400 hover:text-red-600 transition-colors"
+                                title="Dissolver grupo (separar todos os elementos)"
+                              >
+                                <Unlink className="w-3 h-3" />
+                              </button>
+                              {group.some(e => (e.type === 'NOME' || e.type === 'AUTOR' || e.type === 'JUIZ') && (e.original.includes(' e ') || e.original.includes('  ') || e.original.split(' ').length >= 4)) && (
+                                <div className="flex items-center bg-gray-100 rounded p-0.5">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleSplitGroup(groupId, 'e');
+                                    }}
+                                    className="p-1 hover:bg-white rounded text-indigo-400 hover:text-indigo-600 transition-colors"
+                                    title="Dividir por 'e'"
+                                  >
+                                    <Scissors className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleSplitGroup(groupId, 'space');
+                                    }}
+                                    className="p-1 hover:bg-white rounded text-indigo-400 hover:text-indigo-600 transition-colors"
+                                    title="Dividir por espaços/nomes longos"
+                                  >
+                                    <Type className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </h3>
                           <div className="text-xs text-gray-500 flex items-center gap-1">
                             {group.length} ocorrências • {group[0].pseudonym}
@@ -2068,8 +2481,8 @@ export default function App() {
                       </div>
                       <div className="flex items-center gap-2">
                         <select 
-                          className="text-[10px] font-bold bg-white border border-gray-200 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          value={group[0].type}
+                          className={`text-[10px] font-bold bg-white border border-gray-200 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 ${group.some(e => e.type !== group[0].type) ? 'text-amber-600 border-amber-200' : ''}`}
+                          value={group.every(e => e.type === group[0].type) ? group[0].type : 'MIXED'}
                           onClick={(e) => e.stopPropagation()}
                           onChange={(e) => {
                             e.stopPropagation();
@@ -2077,6 +2490,9 @@ export default function App() {
                           }}
                           title="Alterar categoria de todo o grupo"
                         >
+                          {group.some(e => e.type !== group[0].type) && (
+                            <option value="MIXED" disabled>VÁRIOS</option>
+                          )}
                           {Object.keys(PII_COLORS).map(type => (
                             <option key={type} value={type}>{type}</option>
                           ))}
@@ -2424,11 +2840,55 @@ export default function App() {
                 </button>
               </div>
               
+              <div className="p-4 border-b border-gray-100 bg-gray-50/50 space-y-3">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input 
+                    type="text" 
+                    placeholder={`Pesquisar em ${exceptionsTab === 'EXCECAO' ? 'exceções' : exceptionsTab === 'JUIZ' ? 'juízes' : 'autores'}...`}
+                    value={knowledgeSearch}
+                    onChange={(e) => setKnowledgeSearch(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    placeholder={`Adicionar novo(a) ${exceptionsTab === 'EXCECAO' ? 'exceção' : exceptionsTab === 'JUIZ' ? 'juiz' : 'autor'}...`}
+                    className="flex-1 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const val = e.currentTarget.value.trim();
+                        if (val) {
+                          setGlobalKnowledge(prev => ({ ...prev, [val]: exceptionsTab }));
+                          e.currentTarget.value = '';
+                          showToast(`"${val}" adicionado às ${exceptionsTab === 'EXCECAO' ? 'exceções' : exceptionsTab === 'JUIZ' ? 'juízes' : 'autores'}.`, "success");
+                        }
+                      }
+                    }}
+                  />
+                  <button 
+                    onClick={(e) => {
+                      const input = e.currentTarget.previousElementSibling as HTMLInputElement;
+                      const val = input.value.trim();
+                      if (val) {
+                        setGlobalKnowledge(prev => ({ ...prev, [val]: exceptionsTab }));
+                        input.value = '';
+                        showToast(`"${val}" adicionado às ${exceptionsTab === 'EXCECAO' ? 'exceções' : exceptionsTab === 'JUIZ' ? 'juízes' : 'autores'}.`, "success");
+                      }
+                    }}
+                    className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-indigo-700 transition-all"
+                  >
+                    Adicionar
+                  </button>
+                </div>
+              </div>
+
               <div className="p-6 overflow-y-auto flex-1">
                 <div className="flex justify-between items-center mb-4">
                   <div className="flex items-center gap-4">
                     <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
-                      {Object.entries(globalKnowledge).filter(([_, type]) => type === exceptionsTab).length} Elementos
+                      {Object.entries(globalKnowledge).filter(([text, type]) => type === exceptionsTab && text.toLowerCase().includes(knowledgeSearch.toLowerCase())).length} Elementos
                     </span>
                     {exceptionsTab === 'JUIZ' && (
                       <div className="flex items-center gap-2">
@@ -2490,7 +2950,8 @@ export default function App() {
                 ) : (
                   <div className="space-y-2">
                     {Object.entries(globalKnowledge)
-                      .filter(([_, type]) => type === exceptionsTab)
+                      .filter(([text, type]) => type === exceptionsTab && text.toLowerCase().includes(knowledgeSearch.toLowerCase()))
+                      .sort((a, b) => a[0].localeCompare(b[0]))
                       .map(([text, type]) => (
                         <div key={text} className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-100 group">
                           <span className="font-medium">{text}</span>
