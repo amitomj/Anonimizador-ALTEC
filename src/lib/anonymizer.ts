@@ -218,9 +218,71 @@ export function getNextPseudonym(type: string, existingEntities: PIIEntity[]): s
   return `${prefix}.${count}`;
 }
 
-export function scanText(text: string, fileId: string, existingEntities: PIIEntity[] = [], isRelated: boolean = true, globalKnowledge: Record<string, string> = {}): PIIEntity[] {
+// Normalização de texto conforme requisitos
+export function normalizeText(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // Remove acentos
+    .replace(/\s+/g, ' ')           // Colapsa espaços múltiplos
+    .trim();
+}
+
+// Função para comparar texto ignorando acentos e case
+export function isMatchNormalized(text: string, term: string): boolean {
+  const normText = normalizeText(text);
+  const normTerm = normalizeText(term);
+  return normText === normTerm;
+}
+
+export interface Safelist {
+  words_ignore: string[];
+  phrases_ignore: string[];
+}
+
+export function scanText(
+  text: string, 
+  fileId: string, 
+  existingEntities: PIIEntity[] = [], 
+  isRelated: boolean = true, 
+  globalKnowledge: Record<string, string> = {},
+  safelist: Safelist = { words_ignore: [], phrases_ignore: [] }
+): PIIEntity[] {
   const entities: PIIEntity[] = [];
-  const foundMatches: { text: string, type: string, start: number, end: number }[] = [];
+  const foundMatches: { text: string, type: string, start: number, end: number, reason?: string }[] = [];
+
+  // Pré-processamento: Identificar áreas protegidas pela Safelist
+  const protectedRanges: { start: number, end: number, term: string }[] = [];
+  
+  // Normalizar o texto mantendo o mapeamento de índices (aproximado, lidando com acentos)
+  // Para simplificar e manter precisão, vamos usar regex que ignoram acentos
+  const getRegexForTerm = (term: string) => {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Substituir letras com acentos por classes de caracteres
+    const withAccents = escaped
+      .replace(/[aáàâã]/gi, '[aáàâã]')
+      .replace(/[eéèê]/gi, '[eéèê]')
+      .replace(/[iíìî]/gi, '[iíìî]')
+      .replace(/[oóòôõ]/gi, '[oóòôõ]')
+      .replace(/[uúùû]/gi, '[uúùû]')
+      .replace(/[cç]/gi, '[cç]');
+    
+    // Permitir múltiplos espaços entre palavras
+    const withSpaces = withAccents.replace(/\s+/g, '\\s+');
+    return new RegExp(`\\b${withSpaces}\\b`, 'gi');
+  };
+
+  // PASSO A: Expressões a ignorar
+  safelist.phrases_ignore.forEach(phrase => {
+    const regex = getRegexForTerm(phrase);
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      protectedRanges.push({ start: match.index, end: match.index + match[0].length, term: phrase });
+    }
+  });
+
+  // PASSO B: Palavras a ignorar (serão usadas no filtro final dos matches)
+  const normalizedWordsIgnore = new Set(safelist.words_ignore.map(w => normalizeText(w)));
 
   // 1. Regex Patterns
     Object.entries(PII_PATTERNS).forEach(([type, pattern]) => {
@@ -235,11 +297,19 @@ export function scanText(text: string, fileId: string, existingEntities: PIIEnti
         if (type === 'IBAN' && !isValidIBAN(matchText)) continue;
 
         const start = match.index + (match[0].indexOf(matchText));
+        const end = start + matchText.length;
+
+        // Verificar se está em área protegida (PASSO A)
+        if (protectedRanges.some(r => start >= r.start && end <= r.end)) continue;
+
+        // Verificar se é palavra a ignorar (PASSO B)
+        if (normalizedWordsIgnore.has(normalizeText(matchText))) continue;
+
         foundMatches.push({
           text: matchText,
           type: type.startsWith('NOME') ? 'NOME' : type,
           start: start,
-          end: start + matchText.length
+          end: end
         });
       }
     });
@@ -256,6 +326,11 @@ export function scanText(text: string, fileId: string, existingEntities: PIIEnti
       if (match[1]) {
         const matchText = match[1].trim();
         const index = match.index + match[0].indexOf(matchText);
+        const end = index + matchText.length;
+
+        // Verificar Safelist
+        if (protectedRanges.some(r => index >= r.start && end <= r.end)) continue;
+        if (normalizedWordsIgnore.has(normalizeText(matchText))) continue;
         
         let type = 'NOME';
         const prefix = match[0].split(':')[0].toLowerCase();
@@ -277,7 +352,7 @@ export function scanText(text: string, fileId: string, existingEntities: PIIEnti
           text: matchText,
           type: type,
           start: index,
-          end: index + matchText.length
+          end: end
         });
       }
     }
@@ -287,22 +362,36 @@ export function scanText(text: string, fileId: string, existingEntities: PIIEnti
   const doc = nlp(text);
   doc.people().json().forEach((p: any) => {
     if (p.text.length > 3) {
+      const start = p.offset?.start || 0;
+      const end = start + p.text.length;
+
+      // Verificar Safelist
+      if (protectedRanges.some(r => start >= r.start && end <= r.end)) return;
+      if (normalizedWordsIgnore.has(normalizeText(p.text))) return;
+
       foundMatches.push({
         text: p.text,
         type: 'NOME',
-        start: p.offset?.start || 0,
-        end: (p.offset?.start || 0) + p.text.length
+        start: start,
+        end: end
       });
     }
   });
 
   doc.places().json().forEach((p: any) => {
     if (p.text.length > 3) {
+      const start = p.offset?.start || 0;
+      const end = start + p.text.length;
+
+      // Verificar Safelist
+      if (protectedRanges.some(r => start >= r.start && end <= r.end)) return;
+      if (normalizedWordsIgnore.has(normalizeText(p.text))) return;
+
       foundMatches.push({
         text: p.text,
         type: 'LOCAL',
-        start: p.offset?.start || 0,
-        end: (p.offset?.start || 0) + p.text.length
+        start: start,
+        end: end
       });
     }
   });
@@ -340,28 +429,29 @@ export function scanText(text: string, fileId: string, existingEntities: PIIEnti
     if (trimmed.length < 2) return;
 
     const lower = trimmed.toLowerCase();
+    const norm = normalizeText(trimmed);
     
-    // Check global knowledge
-    const knowledgeType = globalKnowledge[lower];
+    // PASSO C: Listas de anonimização forçada (Exceções Globais)
+    // Se estiver nas exceções globais (que agora podem vir do conhecimento global), ignorar.
+    const knowledgeType = globalKnowledge[norm] || globalKnowledge[lower];
     if (knowledgeType === 'EXCECAO') return;
     
     const finalType = knowledgeType || type;
 
-    if (DEFAULT_GLOBAL_EXCEPTIONS.some(ex => ex.toLowerCase() === lower)) return;
-    if (ENTITY_BLACKLIST.includes(trimmed.toUpperCase())) return;
+    if (DEFAULT_GLOBAL_EXCEPTIONS.some(ex => normalizeText(ex) === norm)) return;
+    if (ENTITY_BLACKLIST.includes(norm.toUpperCase())) return;
 
     // Advanced Judge Identification based on globalKnowledge
     let identifiedType = finalType;
     const judges = Object.entries(globalKnowledge).filter(([_, t]) => t === 'JUIZ').map(([n]) => n.toLowerCase());
     const authors = Object.entries(globalKnowledge).filter(([_, t]) => t === 'AUTOR').map(([n]) => n.toLowerCase());
-    const nameWords = lower.split(/\s+/).filter(w => w.length > 2);
+    const nameWords = norm.split(/\s+/).filter(w => w.length > 2);
 
     if (identifiedType !== 'JUIZ' && identifiedType !== 'AUTOR' && nameWords.length >= 2) {
       // Rule: Identify as JUIZ if matches a judge (first name + one more)
       const isJudgeMatch = judges.some(judgeName => {
-        const judgeWords = judgeName.split(/\s+/).filter(w => w.length > 2);
+        const judgeWords = normalizeText(judgeName).split(/\s+/).filter(w => w.length > 2);
         if (judgeWords.length < 2) return false;
-        // Check if at least 2 significant words match
         const common = nameWords.filter(w => judgeWords.includes(w));
         return common.length >= 2;
       });
@@ -369,9 +459,8 @@ export function scanText(text: string, fileId: string, existingEntities: PIIEnti
       if (isJudgeMatch) {
         identifiedType = 'JUIZ';
       } else {
-        // Rule: Identify as AUTOR if matches an author (first name + one more)
         const isAuthorMatch = authors.some(authorName => {
-          const authorWords = authorName.split(/\s+/).filter(w => w.length > 2);
+          const authorWords = normalizeText(authorName).split(/\s+/).filter(w => w.length > 2);
           if (authorWords.length < 2) return false;
           const common = nameWords.filter(w => authorWords.includes(w));
           return common.length >= 2;
@@ -385,7 +474,7 @@ export function scanText(text: string, fileId: string, existingEntities: PIIEnti
 
     // Check if exists in existing entities (for grouping)
     const existing = existingEntities.find(e => 
-      e.original.toLowerCase() === lower && 
+      normalizeText(e.original) === norm && 
       e.type === identifiedType &&
       (isRelated || e.fileIds?.includes(fileId))
     );

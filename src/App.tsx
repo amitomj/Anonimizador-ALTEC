@@ -25,6 +25,7 @@ import {
   cleanName,
   PIIEntity,
   PII_COLORS,
+  Safelist
 } from './lib/anonymizer';
 
 // Set up PDF.js worker
@@ -235,7 +236,7 @@ export default function App() {
   const [showManualModal, setShowManualModal] = useState(false);
   const [showAmbiguityModal, setShowAmbiguityModal] = useState(false);
   const [ambiguousEntities, setAmbiguousEntities] = useState<PIIEntity[]>([]);
-  const [exceptionsTab, setExceptionsTab] = useState<'EXCECAO' | 'JUIZ' | 'AUTOR'>('EXCECAO');
+  const [exceptionsTab, setExceptionsTab] = useState<'EXCECAO' | 'JUIZ' | 'AUTOR' | 'SAFELIST'>('EXCECAO');
   const [knowledgeSearch, setKnowledgeSearch] = useState('');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [splitView, setSplitView] = useState(false);
@@ -338,6 +339,11 @@ export default function App() {
     return saved ? JSON.parse(saved) : {};
   });
 
+  const [safelist, setSafelist] = useState<Safelist>(() => {
+    const saved = localStorage.getItem('pii_safelist');
+    return saved ? JSON.parse(saved) : { words_ignore: [], phrases_ignore: [] };
+  });
+
   // Migration script for old global exceptions
   useEffect(() => {
     const oldExceptions = localStorage.getItem('pii_global_exceptions');
@@ -367,6 +373,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('pii_global_knowledge', JSON.stringify(globalKnowledge));
   }, [globalKnowledge]);
+
+  useEffect(() => {
+    localStorage.setItem('pii_safelist', JSON.stringify(safelist));
+  }, [safelist]);
 
   // Auto-save project state
   useEffect(() => {
@@ -437,7 +447,7 @@ export default function App() {
           text = await fileData.rawFile.text();
         }
 
-        const fileEntities = scanText(text, fileData.id, allNewEntities, isRelated, globalKnowledge);
+        const fileEntities = scanText(text, fileData.id, allNewEntities, isRelated, globalKnowledge, safelist);
         console.log(`Found ${fileEntities.length} entities in file ${fileData.name}`);
         allNewEntities = [...allNewEntities, ...fileEntities];
 
@@ -1595,9 +1605,143 @@ export default function App() {
     });
   };
 
+  const handleImportSafelist = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      let newWords: string[] = [];
+      let newPhrases: string[] = [];
+
+      if (file.name.endsWith('.json')) {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        // Suporta tanto o formato simples quanto o formato estruturado do user
+        if (data.words_ignore || data.phrases_ignore) {
+          newWords = data.words_ignore || [];
+          newPhrases = data.phrases_ignore || [];
+        } else if (Array.isArray(data)) {
+          // Fallback para array simples
+          data.forEach(item => {
+            if (typeof item === 'string') {
+              if (item.includes(' ')) newPhrases.push(item);
+              else newWords.push(item);
+            }
+          });
+        }
+      } else if (file.name.endsWith('.txt')) {
+        const text = await file.text();
+        const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+        lines.forEach(line => {
+          if (line.includes(' ')) {
+            newPhrases.push(line);
+          } else {
+            newWords.push(line);
+          }
+        });
+      }
+
+      setSafelist(prev => {
+        const words = new Set([...prev.words_ignore, ...newWords]);
+        const phrases = new Set([...prev.phrases_ignore, ...newPhrases]);
+        return {
+          words_ignore: Array.from(words),
+          phrases_ignore: Array.from(phrases)
+        };
+      });
+
+      showToast(`Safelist importada: ${newWords.length} palavras, ${newPhrases.length} frases.`, "success");
+    } catch (err) {
+      console.error("Erro ao importar safelist:", err);
+      showToast("Erro ao importar ficheiro de safelist.", "error");
+    }
+    e.target.value = '';
+  };
+
+  const handleExportAllKnowledge = () => {
+    const data = {
+      globalKnowledge,
+      safelist,
+      version: "1.0",
+      exportDate: new Date().toISOString()
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    saveAs(blob, `conhecimento_anonymiza_${new Date().toISOString().slice(0,10)}.json`);
+    showToast("Todo o conhecimento exportado com sucesso", "success");
+  };
+
+  const handleImportAllKnowledge = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      
+      if (data.globalKnowledge) {
+        setGlobalKnowledge(prev => ({ ...prev, ...data.globalKnowledge }));
+      }
+      
+      if (data.safelist) {
+        setSafelist(prev => {
+          const words = new Set([...prev.words_ignore, ...(data.safelist.words_ignore || [])]);
+          const phrases = new Set([...prev.phrases_ignore, ...(data.safelist.phrases_ignore || [])]);
+          return {
+            words_ignore: Array.from(words),
+            phrases_ignore: Array.from(phrases)
+          };
+        });
+      }
+      
+      showToast("Conhecimento importado e mesclado com sucesso", "success");
+    } catch (err) {
+      console.error("Erro ao importar conhecimento:", err);
+      showToast("Erro ao importar ficheiro de conhecimento.", "error");
+    }
+    e.target.value = '';
+  };
+
   const handleExportExceptions = () => {
     const blob = new Blob([JSON.stringify(globalKnowledge, null, 2)], { type: 'application/json' });
     saveAs(blob, 'conhecimento_global.json');
+  };
+
+  const handleTransferExceptionsToSafelist = () => {
+    const exceptionsToMove = Object.entries(globalKnowledge).filter(([_, type]) => type === 'EXCECAO');
+    if (exceptionsToMove.length === 0) {
+      showToast("Nenhuma exceção para transferir.", "info");
+      return;
+    }
+
+    const newWords: string[] = [];
+    const newPhrases: string[] = [];
+
+    exceptionsToMove.forEach(([text]) => {
+      if (text.includes(' ')) {
+        newPhrases.push(text);
+      } else {
+        newWords.push(text);
+      }
+    });
+
+    setSafelist(prev => {
+      const words = new Set([...prev.words_ignore, ...newWords]);
+      const phrases = new Set([...prev.phrases_ignore, ...newPhrases]);
+      return {
+        words_ignore: Array.from(words),
+        phrases_ignore: Array.from(phrases)
+      };
+    });
+
+    setGlobalKnowledge(prev => {
+      const next = { ...prev };
+      exceptionsToMove.forEach(([text]) => {
+        delete next[text];
+      });
+      return next;
+    });
+
+    showToast(`${exceptionsToMove.length} exceções transferidas para a Safelist.`, "success");
   };
 
   const handleImportExceptions = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -3226,13 +3370,15 @@ export default function App() {
                 <section id="conhecimento" className="space-y-8">
                   <div className="flex items-center gap-4 text-indigo-600">
                     <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl font-black shadow-lg shadow-indigo-200">5</div>
-                    <h3 className="text-2xl font-bold">Conhecimento Global: Exceções, Juízes e Autores</h3>
+                    <h3 className="text-2xl font-bold">Conhecimento Global: Exceções, Juízes, Autores e Safelist</h3>
                   </div>
                   
                   <div className="space-y-6">
-                    <p className="text-gray-600">O sistema mantém uma base de dados de termos que devem ser tratados de forma especial em todos os documentos.</p>
+                    <p className="text-gray-600 leading-relaxed">
+                      O sistema mantém uma base de dados de termos que devem ser tratados de forma especial em todos os documentos. Esta base é <strong>persistente</strong>: o que adicionar hoje estará disponível amanhã, mesmo em novos projetos.
+                    </p>
                     
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                       <div className="p-6 bg-white border border-gray-200 rounded-3xl shadow-sm space-y-4">
                         <div className="w-12 h-12 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center"><Shield className="w-6 h-6" /></div>
                         <h5 className="font-bold text-gray-900">Exceções</h5>
@@ -3248,16 +3394,35 @@ export default function App() {
                         <h5 className="font-bold text-gray-900">Autores</h5>
                         <p className="text-sm text-gray-500">Semelhante aos juízes, para identificar magistrados do Ministério Público ou advogados específicos.</p>
                       </div>
+                      <div className="p-6 bg-white border border-gray-200 rounded-3xl shadow-sm space-y-4">
+                        <div className="w-12 h-12 bg-green-100 text-green-600 rounded-2xl flex items-center justify-center"><List className="w-6 h-6" /></div>
+                        <h5 className="font-bold text-gray-900">Safelist</h5>
+                        <p className="text-sm text-gray-500">Uma lista técnica de palavras e frases comuns que devem ser ignoradas pelo motor de deteção para evitar falsos positivos.</p>
+                      </div>
                     </div>
 
-                    <div className="p-6 bg-indigo-50 rounded-3xl border border-indigo-100">
-                      <h6 className="font-bold text-indigo-900 mb-2 flex items-center gap-2">
-                        <Download className="w-4 h-4" />
-                        Importação de Listas
-                      </h6>
-                      <p className="text-sm text-indigo-800">
-                        Não precisa de digitar um a um. Pode importar ficheiros PDF ou TXT com listas de nomes e a app extrairá e adicionará todos automaticamente à base de conhecimento.
-                      </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      <div className="p-6 bg-indigo-50 rounded-3xl border border-indigo-100 space-y-4">
+                        <h6 className="font-bold text-indigo-900 flex items-center gap-2">
+                          <Upload className="w-5 h-5" />
+                          Importação de Safelist (JSON/TXT)
+                        </h6>
+                        <p className="text-sm text-indigo-800 leading-relaxed">
+                          A Safelist permite importar listas massivas de termos jurídicos ou institucionais. 
+                          Pode importar ficheiros <strong>.json</strong> estruturados ou simples ficheiros <strong>.txt</strong> (onde cada linha é um termo). 
+                          A app separa automaticamente palavras de frases para otimizar a precisão.
+                        </p>
+                      </div>
+                      <div className="p-6 bg-indigo-600 text-white rounded-3xl shadow-xl space-y-4">
+                        <h6 className="font-bold flex items-center gap-2">
+                          <Download className="w-5 h-5" />
+                          Exportação e Partilha de Conhecimento
+                        </h6>
+                        <p className="text-sm text-indigo-100 leading-relaxed">
+                          Pode exportar <strong>todo o seu conhecimento</strong> (Exceções + Juízes + Autores + Safelist) num único ficheiro JSON. 
+                          Isto permite que equipas partilhem as suas bases de dados de termos a ignorar, garantindo consistência entre diferentes utilizadores.
+                        </p>
+                      </div>
                     </div>
                   </div>
                 </section>
@@ -3495,13 +3660,20 @@ export default function App() {
                   <p className="text-xs text-gray-500">Elementos que têm tratamento especial em todos os projetos</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <label className="cursor-pointer p-2 hover:bg-gray-100 rounded-full transition-colors" title="Importar JSON">
-                    <Upload className="w-5 h-5 text-gray-500" />
-                    <input type="file" accept=".json" className="hidden" onChange={handleImportExceptions} />
+                  <label className="cursor-pointer flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs font-bold hover:bg-indigo-100 transition-colors" title="Importar Base de Conhecimento Completa (JSON)">
+                    <Upload className="w-4 h-4" />
+                    <span>Importar Tudo</span>
+                    <input type="file" accept=".json" className="hidden" onChange={handleImportAllKnowledge} />
                   </label>
-                  <button onClick={handleExportExceptions} className="p-2 hover:bg-gray-100 rounded-full transition-colors" title="Exportar JSON">
-                    <Download className="w-5 h-5 text-gray-500" />
+                  <button 
+                    onClick={handleExportAllKnowledge} 
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition-colors" 
+                    title="Exportar Base de Conhecimento Completa (JSON)"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Exportar Tudo</span>
                   </button>
+                  <div className="w-px h-6 bg-gray-200 mx-1" />
                   <button onClick={() => setShowExceptionsModal(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
                     <X className="w-5 h-5" />
                   </button>
@@ -3527,6 +3699,12 @@ export default function App() {
                 >
                   Autores
                 </button>
+                <button 
+                  onClick={() => setExceptionsTab('SAFELIST')}
+                  className={`flex-1 py-3 text-sm font-bold transition-colors ${exceptionsTab === 'SAFELIST' ? 'text-indigo-600 border-b-2 border-indigo-600 bg-indigo-50/30' : 'text-gray-500 hover:bg-gray-50'}`}
+                >
+                  Safelist
+                </button>
               </div>
               
               <div className="p-4 border-b border-gray-100 bg-gray-50/50 space-y-3">
@@ -3534,7 +3712,7 @@ export default function App() {
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                   <input 
                     type="text" 
-                    placeholder={`Pesquisar em ${exceptionsTab === 'EXCECAO' ? 'exceções' : exceptionsTab === 'JUIZ' ? 'juízes' : 'autores'}...`}
+                    placeholder={`Pesquisar em ${exceptionsTab === 'EXCECAO' ? 'exceções' : exceptionsTab === 'JUIZ' ? 'juízes' : exceptionsTab === 'AUTOR' ? 'autores' : 'safelist'}...`}
                     value={knowledgeSearch}
                     onChange={(e) => setKnowledgeSearch(e.target.value)}
                     className="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all"
@@ -3543,15 +3721,24 @@ export default function App() {
                 <div className="flex gap-2">
                   <input 
                     type="text" 
-                    placeholder={`Adicionar novo(a) ${exceptionsTab === 'EXCECAO' ? 'exceção' : exceptionsTab === 'JUIZ' ? 'juiz' : 'autor'}...`}
+                    placeholder={`Adicionar novo(a) ${exceptionsTab === 'EXCECAO' ? 'exceção' : exceptionsTab === 'JUIZ' ? 'juiz' : exceptionsTab === 'AUTOR' ? 'autor' : 'termo na safelist'}...`}
                     className="flex-1 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         const val = e.currentTarget.value.trim();
                         if (val) {
-                          setGlobalKnowledge(prev => ({ ...prev, [val]: exceptionsTab }));
+                          if (exceptionsTab === 'SAFELIST') {
+                            setSafelist(prev => {
+                              const isPhrase = val.includes(' ');
+                              const words = isPhrase ? prev.words_ignore : Array.from(new Set([...prev.words_ignore, val]));
+                              const phrases = isPhrase ? Array.from(new Set([...prev.phrases_ignore, val])) : prev.phrases_ignore;
+                              return { words_ignore: words, phrases_ignore: phrases };
+                            });
+                          } else {
+                            setGlobalKnowledge(prev => ({ ...prev, [val]: exceptionsTab }));
+                          }
                           e.currentTarget.value = '';
-                          showToast(`"${val}" adicionado às ${exceptionsTab === 'EXCECAO' ? 'exceções' : exceptionsTab === 'JUIZ' ? 'juízes' : 'autores'}.`, "success");
+                          showToast(`"${val}" adicionado.`, "success");
                         }
                       }
                     }}
@@ -3561,9 +3748,18 @@ export default function App() {
                       const input = e.currentTarget.previousElementSibling as HTMLInputElement;
                       const val = input.value.trim();
                       if (val) {
-                        setGlobalKnowledge(prev => ({ ...prev, [val]: exceptionsTab }));
+                        if (exceptionsTab === 'SAFELIST') {
+                          setSafelist(prev => {
+                            const isPhrase = val.includes(' ');
+                            const words = isPhrase ? prev.words_ignore : Array.from(new Set([...prev.words_ignore, val]));
+                            const phrases = isPhrase ? Array.from(new Set([...prev.phrases_ignore, val])) : prev.phrases_ignore;
+                            return { words_ignore: words, phrases_ignore: phrases };
+                          });
+                        } else {
+                          setGlobalKnowledge(prev => ({ ...prev, [val]: exceptionsTab }));
+                        }
                         input.value = '';
-                        showToast(`"${val}" adicionado às ${exceptionsTab === 'EXCECAO' ? 'exceções' : exceptionsTab === 'JUIZ' ? 'juízes' : 'autores'}.`, "success");
+                        showToast(`"${val}" adicionado.`, "success");
                       }
                     }}
                     className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-indigo-700 transition-all"
@@ -3577,8 +3773,23 @@ export default function App() {
                 <div className="flex justify-between items-center mb-4">
                   <div className="flex items-center gap-4">
                     <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
-                      {Object.entries(globalKnowledge).filter(([text, type]) => type === exceptionsTab && text.toLowerCase().includes(knowledgeSearch.toLowerCase())).length} Elementos
+                      {exceptionsTab === 'SAFELIST' 
+                        ? `${safelist.words_ignore.length + safelist.phrases_ignore.length} Termos`
+                        : `${Object.entries(globalKnowledge).filter(([text, type]) => type === exceptionsTab && text.toLowerCase().includes(knowledgeSearch.toLowerCase())).length} Elementos`
+                      }
                     </span>
+                    {exceptionsTab === 'EXCECAO' && (
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={handleTransferExceptionsToSafelist}
+                          className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 transition-colors bg-indigo-50 px-2 py-1 rounded"
+                          title="Mover todas as exceções para a Safelist e limpar esta lista"
+                        >
+                          <RotateCw className="w-3 h-3" />
+                          Transferir para Safelist
+                        </button>
+                      </div>
+                    )}
                     {exceptionsTab === 'JUIZ' && (
                       <div className="flex items-center gap-2">
                         <button 
@@ -3613,14 +3824,29 @@ export default function App() {
                         </label>
                       </div>
                     )}
+                    {exceptionsTab === 'SAFELIST' && (
+                      <div className="flex items-center gap-2">
+                        <label className="cursor-pointer text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 transition-colors bg-indigo-50 px-2 py-1 rounded" title="Importar Safelist (JSON ou TXT)">
+                          <Upload className="w-3 h-3" />
+                          <span>Importar Safelist (JSON/TXT)</span>
+                          <input type="file" accept=".json,.txt" className="hidden" onChange={handleImportSafelist} />
+                        </label>
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-4">
                     <button 
-                      onClick={() => handleClearGlobalKnowledge(exceptionsTab)}
+                      onClick={() => {
+                        if (exceptionsTab === 'SAFELIST') {
+                          setSafelist({ words_ignore: [], phrases_ignore: [] });
+                        } else {
+                          handleClearGlobalKnowledge(exceptionsTab);
+                        }
+                      }}
                       className="text-xs font-bold text-red-500 hover:text-red-700 flex items-center gap-1 transition-colors"
                     >
                       <Trash2 className="w-3 h-3" />
-                      Limpar {exceptionsTab === 'EXCECAO' ? 'Exceções' : exceptionsTab === 'JUIZ' ? 'Juízes' : 'Autores'}
+                      Limpar {exceptionsTab === 'EXCECAO' ? 'Exceções' : exceptionsTab === 'JUIZ' ? 'Juízes' : exceptionsTab === 'AUTOR' ? 'Autores' : 'Safelist'}
                     </button>
                     <button 
                       onClick={handleClearAllGlobalKnowledge}
@@ -3631,44 +3857,108 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                {Object.entries(globalKnowledge).filter(([_, type]) => type === exceptionsTab).length === 0 ? (
-                  <div className="text-center py-12 text-gray-400">
-                    <Shield className="w-12 h-12 mx-auto mb-4 opacity-20" />
-                    <p>Nenhum elemento nesta categoria.</p>
+
+                {exceptionsTab === 'SAFELIST' ? (
+                  <div className="space-y-6">
+                    {safelist.phrases_ignore.length > 0 && (
+                      <div>
+                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Expressões (Phrases)</h4>
+                        <div className="space-y-2">
+                          {safelist.phrases_ignore
+                            .filter(p => p.toLowerCase().includes(knowledgeSearch.toLowerCase()))
+                            .sort()
+                            .map(phrase => (
+                              <div key={phrase} className="flex items-center justify-between bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 group">
+                                <span className="font-medium text-indigo-900">{phrase}</span>
+                                <button 
+                                  onClick={() => setSafelist(prev => ({
+                                    ...prev,
+                                    phrases_ignore: prev.phrases_ignore.filter(p => p !== phrase)
+                                  }))}
+                                  className="p-1.5 text-gray-400 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {safelist.words_ignore.length > 0 && (
+                      <div>
+                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Palavras (Words)</h4>
+                        <div className="flex flex-wrap gap-2">
+                          {safelist.words_ignore
+                            .filter(w => w.toLowerCase().includes(knowledgeSearch.toLowerCase()))
+                            .sort()
+                            .map(word => (
+                              <div key={word} className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-full border border-gray-200 group">
+                                <span className="text-sm">{word}</span>
+                                <button 
+                                  onClick={() => setSafelist(prev => ({
+                                    ...prev,
+                                    words_ignore: prev.words_ignore.filter(w => w !== word)
+                                  }))}
+                                  className="text-gray-400 hover:text-red-500 transition-colors"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {safelist.words_ignore.length === 0 && safelist.phrases_ignore.length === 0 && (
+                      <div className="text-center py-12 text-gray-400">
+                        <Shield className="w-12 h-12 mx-auto mb-4 opacity-20" />
+                        <p>A Safelist está vazia.</p>
+                      </div>
+                    )}
                   </div>
                 ) : (
-                  <div className="space-y-2">
-                    {Object.entries(globalKnowledge)
-                      .filter(([text, type]) => type === exceptionsTab && text.toLowerCase().includes(knowledgeSearch.toLowerCase()))
-                      .sort((a, b) => a[0].localeCompare(b[0]))
-                      .map(([text, type]) => (
-                        <div key={text} className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-100 group">
-                          <span className="font-medium">{text}</span>
-                          <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <select 
-                              value={type}
-                              onChange={(e) => setGlobalKnowledge(prev => ({ ...prev, [text]: e.target.value }))}
-                              className="text-xs bg-white border border-gray-200 rounded px-2 py-1 outline-none focus:border-indigo-300"
-                            >
-                              <option value="EXCECAO">Exceção</option>
-                              <option value="JUIZ">Juiz</option>
-                              <option value="AUTOR">Autor</option>
-                            </select>
-                            <button 
-                              onClick={() => setGlobalKnowledge(prev => {
-                                const next = { ...prev };
-                                delete next[text];
-                                return next;
-                              })}
-                              className="p-1.5 text-gray-400 hover:text-red-500 transition-colors"
-                              title="Remover"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                  </div>
+                  <>
+                    {Object.entries(globalKnowledge).filter(([_, type]) => type === exceptionsTab).length === 0 ? (
+                      <div className="text-center py-12 text-gray-400">
+                        <Shield className="w-12 h-12 mx-auto mb-4 opacity-20" />
+                        <p>Nenhum elemento nesta categoria.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {Object.entries(globalKnowledge)
+                          .filter(([text, type]) => type === exceptionsTab && text.toLowerCase().includes(knowledgeSearch.toLowerCase()))
+                          .sort((a, b) => a[0].localeCompare(b[0]))
+                          .map(([text, type]) => (
+                            <div key={text} className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-100 group">
+                              <span className="font-medium">{text}</span>
+                              <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <select 
+                                  value={type}
+                                  onChange={(e) => setGlobalKnowledge(prev => ({ ...prev, [text]: e.target.value }))}
+                                  className="text-xs bg-white border border-gray-200 rounded px-2 py-1 outline-none focus:border-indigo-300"
+                                >
+                                  <option value="EXCECAO">Exceção</option>
+                                  <option value="JUIZ">Juiz</option>
+                                  <option value="AUTOR">Autor</option>
+                                </select>
+                                <button 
+                                  onClick={() => setGlobalKnowledge(prev => {
+                                    const next = { ...prev };
+                                    delete next[text];
+                                    return next;
+                                  })}
+                                  className="p-1.5 text-gray-400 hover:text-red-500 transition-colors"
+                                  title="Remover"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </motion.div>
