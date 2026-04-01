@@ -17,6 +17,7 @@ export interface PIIEntity {
   contextBefore?: string; // Snippet before
   contextAfter?: string; // Snippet after
   contextSnippet?: string; // 2 words before + entity + 2 words after
+  reviewed?: boolean; // For ambiguity review
 }
 
 export const PII_COLORS: Record<string, { bg: [number, number, number], text: [number, number, number], hex: string, textHex: string }> = {

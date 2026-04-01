@@ -232,6 +232,8 @@ export default function App() {
   const [copiedPseudonym, setCopiedPseudonym] = useState<string | null>(null);
   const [showMergeModal, setShowMergeModal] = useState(false);
   const [showExceptionsModal, setShowExceptionsModal] = useState(false);
+  const [showAmbiguityModal, setShowAmbiguityModal] = useState(false);
+  const [ambiguousEntities, setAmbiguousEntities] = useState<PIIEntity[]>([]);
   const [exceptionsTab, setExceptionsTab] = useState<'EXCECAO' | 'JUIZ' | 'AUTOR'>('EXCECAO');
   const [knowledgeSearch, setKnowledgeSearch] = useState('');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -443,6 +445,18 @@ export default function App() {
         console.error(`Error processing file ${fileData.name}:`, error);
         setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, status: 'error' } : f));
       }
+    }
+
+    const potentialAmbiguities = allNewEntities.filter(e => 
+      (e.type === 'NOME' || e.type === 'AUTOR' || e.type === 'JUIZ') && 
+      (e.original.includes(' e ') || e.original.includes(',') || e.original.includes('  '))
+    );
+
+    if (potentialAmbiguities.length > 0) {
+      setAmbiguousEntities(allNewEntities);
+      setShowAmbiguityModal(true);
+      setIsProcessing(false);
+      return;
     }
 
     const grouped = groupSimilarEntities(allNewEntities, isRelated);
@@ -988,6 +1002,59 @@ export default function App() {
     });
     setEditingEntity(null);
     showToast(`${parts.length} novos elementos criados e grupos re-organizados.`, "success");
+  };
+
+  const handleFinishAmbiguityReview = () => {
+    const grouped = groupSimilarEntities(ambiguousEntities, isRelated);
+    setEntities(grouped);
+    pushToHistory(grouped, files);
+    setShowAmbiguityModal(false);
+    setAmbiguousEntities([]);
+    showToast("Revisão concluída. Entidades agrupadas.", "success");
+  };
+
+  const handleSplitAmbiguous = (id: string, strategy: 'e' | 'comma' | 'space') => {
+    setAmbiguousEntities(prev => {
+      const next: PIIEntity[] = [];
+      prev.forEach(entity => {
+        if (entity.id === id) {
+          let parts: string[] = [];
+          if (strategy === 'e') {
+            parts = entity.original.split(/\s+e\s+/i).map(p => p.trim()).filter(p => p.length > 2);
+          } else if (strategy === 'comma') {
+            parts = entity.original.split(/,/).map(p => p.trim()).filter(p => p.length > 2);
+          } else if (strategy === 'space') {
+            parts = entity.original.split(/\s{2,}/).map(p => p.trim()).filter(p => p.length > 2);
+          }
+
+          if (parts.length >= 2) {
+            parts.forEach(part => {
+              next.push({
+                ...entity,
+                id: Math.random().toString(36).substring(7),
+                original: part,
+                pseudonym: getNextPseudonym(entity.type, [...prev, ...next]),
+                treated: false,
+                reviewed: true
+              });
+            });
+            return;
+          }
+        }
+        next.push(entity);
+      });
+      return next;
+    });
+  };
+
+  const handleMarkAsReviewed = (id: string) => {
+    setAmbiguousEntities(prev => prev.map(e => e.id === id ? { ...e, reviewed: !e.reviewed } : e));
+  };
+
+  const handleAddToExceptionsFromAmbiguity = (text: string) => {
+    addToGlobalKnowledge(text, 'EXCECAO');
+    setAmbiguousEntities(prev => prev.filter(e => e.original.toLowerCase() !== text.toLowerCase()));
+    showToast(`"${text}" adicionado às exceções globais.`, "info");
   };
 
   const handleDissolveGroup = (groupId: string) => {
@@ -2785,6 +2852,128 @@ export default function App() {
 
       {/* Exceptions Modal */}
       <AnimatePresence>
+        {showAmbiguityModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden border border-gray-100"
+            >
+              <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-amber-50/50">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center text-amber-600">
+                    <AlertCircle className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-gray-900">Revisão de Ambiguidade</h2>
+                    <p className="text-sm text-amber-700">Detetámos nomes que podem ser listas de várias pessoas. Por favor, verifique antes de prosseguir.</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={handleFinishAmbiguityReview}
+                  className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 flex items-center gap-2"
+                >
+                  <Check className="w-4 h-4" />
+                  Concluir e Agrupar
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto flex-1 space-y-4">
+                {ambiguousEntities.filter(e => 
+                  (e.type === 'NOME' || e.type === 'AUTOR' || e.type === 'JUIZ') && 
+                  (e.original.includes(' e ') || e.original.includes(',') || e.original.includes('  '))
+                ).length === 0 ? (
+                  <div className="text-center py-12">
+                    <CheckCircle2 className="w-16 h-16 text-green-500 mx-auto mb-4" />
+                    <p className="text-gray-600 font-medium">Todas as ambiguidades foram resolvidas!</p>
+                    <button 
+                      onClick={handleFinishAmbiguityReview}
+                      className="mt-4 text-indigo-600 font-bold hover:underline"
+                    >
+                      Clique aqui para avançar para o agrupamento
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-3">
+                    {ambiguousEntities
+                      .filter(e => 
+                        (e.type === 'NOME' || e.type === 'AUTOR' || e.type === 'JUIZ') && 
+                        (e.original.includes(' e ') || e.original.includes(',') || e.original.includes('  '))
+                      )
+                      .map((entity) => (
+                        <div key={entity.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-200 group hover:border-indigo-200 transition-all">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-gray-200 text-gray-600 uppercase tracking-wider">
+                                {entity.type}
+                              </span>
+                              <span className="text-xs text-gray-400 italic">Original:</span>
+                            </div>
+                            <span className="text-lg font-medium text-gray-900">{entity.original}</span>
+                          </div>
+                          
+                          <div className="flex items-center gap-2">
+                            {entity.original.includes(' e ') && (
+                              <button 
+                                onClick={() => handleSplitAmbiguous(entity.id, 'e')}
+                                className="flex items-center gap-2 px-3 py-2 bg-white border border-indigo-100 text-indigo-600 rounded-xl text-sm font-bold hover:bg-indigo-50 transition-all"
+                              >
+                                <Scissors className="w-4 h-4" />
+                                Dividir por "e"
+                              </button>
+                            )}
+                            {entity.original.includes(',') && (
+                              <button 
+                                onClick={() => handleSplitAmbiguous(entity.id, 'comma')}
+                                className="flex items-center gap-2 px-3 py-2 bg-white border border-indigo-100 text-indigo-600 rounded-xl text-sm font-bold hover:bg-indigo-50 transition-all"
+                              >
+                                <Unlink className="w-4 h-4" />
+                                Dividir por ","
+                              </button>
+                            )}
+                            {entity.original.includes('  ') && (
+                              <button 
+                                onClick={() => handleSplitAmbiguous(entity.id, 'space')}
+                                className="flex items-center gap-2 px-3 py-2 bg-white border border-indigo-100 text-indigo-600 rounded-xl text-sm font-bold hover:bg-indigo-50 transition-all"
+                              >
+                                <Type className="w-4 h-4" />
+                                Dividir por Espaço
+                              </button>
+                            )}
+                            
+                            <button 
+                              onClick={() => handleAddToExceptionsFromAmbiguity(entity.original)}
+                              className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
+                              title="Adicionar às exceções globais"
+                            >
+                              <Shield className="w-5 h-5" />
+                            </button>
+
+                            <button 
+                              onClick={() => handleMarkAsReviewed(entity.id)}
+                              className={`px-4 py-2 rounded-xl text-sm font-bold transition-all ${
+                                entity.reviewed 
+                                  ? 'bg-green-100 text-green-700 border border-green-200' 
+                                  : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
+                              }`}
+                            >
+                              {entity.reviewed ? (
+                                <span className="flex items-center gap-2">
+                                  <Check className="w-4 h-4" />
+                                  Revisado
+                                </span>
+                              ) : 'Manter assim'}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {showExceptionsModal && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
             <motion.div 
