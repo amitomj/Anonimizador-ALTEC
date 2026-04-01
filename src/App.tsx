@@ -5,7 +5,7 @@ import {
   History, Link, ChevronDown, ChevronRight, Search, Filter,
   MoreVertical, Copy, CheckCircle2, User, MapPin, Phone, 
   CreditCard, Mail, Hash, Briefcase, Scale, Trash, RotateCcw, RotateCw,
-  Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type
+  Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type, List
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjs from 'pdfjs-dist';
@@ -232,6 +232,7 @@ export default function App() {
   const [copiedPseudonym, setCopiedPseudonym] = useState<string | null>(null);
   const [showMergeModal, setShowMergeModal] = useState(false);
   const [showExceptionsModal, setShowExceptionsModal] = useState(false);
+  const [showManualModal, setShowManualModal] = useState(false);
   const [showAmbiguityModal, setShowAmbiguityModal] = useState(false);
   const [ambiguousEntities, setAmbiguousEntities] = useState<PIIEntity[]>([]);
   const [exceptionsTab, setExceptionsTab] = useState<'EXCECAO' | 'JUIZ' | 'AUTOR'>('EXCECAO');
@@ -2177,6 +2178,23 @@ export default function App() {
                   ))}
                 </div>
               </div>
+
+              {/* Manual Button */}
+              <button 
+                onClick={() => setShowManualModal(true)}
+                className="w-full flex items-center justify-between p-4 bg-white rounded-2xl border border-gray-200 shadow-sm hover:border-indigo-300 hover:bg-indigo-50/30 transition-all group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  <div className="text-left">
+                    <h3 className="text-sm font-bold text-gray-900">Manual do Utilizador</h3>
+                    <p className="text-xs text-gray-500">Guia completo e ajuda</p>
+                  </div>
+                </div>
+                <ChevronRight className="w-5 h-5 text-gray-400 group-hover:text-indigo-600 transition-all" />
+              </button>
             </div>
           )}
 
@@ -2852,6 +2870,488 @@ export default function App() {
 
       {/* Exceptions Modal */}
       <AnimatePresence>
+        {showManualModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden border border-gray-100"
+            >
+              <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-indigo-600 text-white">
+                <div className="flex items-center gap-3">
+                  <FileText className="w-6 h-6" />
+                  <h2 className="text-xl font-bold">Manual do Utilizador - Anonimiza PII</h2>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={() => {
+                      const printContent = document.getElementById('manual-content');
+                      if (printContent) {
+                        const win = window.open('', '_blank');
+                        win?.document.write(`
+                          <html>
+                            <head>
+                              <title>Manual do Utilizador - Anonimiza PII</title>
+                              <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+                              <style>
+                                @media print {
+                                  .no-print { display: none; }
+                                  body { padding: 20px; }
+                                }
+                              </style>
+                            </head>
+                            <body>
+                              ${printContent.innerHTML}
+                            </body>
+                          </html>
+                        `);
+                        win?.document.close();
+                        setTimeout(() => win?.print(), 500);
+                      }
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 bg-white/20 hover:bg-white/30 rounded-xl text-sm font-bold transition-all"
+                  >
+                    <Download className="w-4 h-4" />
+                    Descarregar PDF
+                  </button>
+                  <button onClick={() => setShowManualModal(false)} className="p-2 hover:bg-white/20 rounded-full transition-colors">
+                    <X className="w-6 h-6" />
+                  </button>
+                </div>
+              </div>
+
+              <div id="manual-content" className="p-8 overflow-y-auto flex-1 space-y-16 text-gray-800">
+                {/* Table of Contents */}
+                <section className="p-8 bg-indigo-50 rounded-3xl border border-indigo-100">
+                  <h3 className="text-xl font-bold text-indigo-900 mb-6 flex items-center gap-2">
+                    <List className="w-5 h-5" />
+                    Índice do Manual
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-3 text-sm font-medium text-indigo-700">
+                    <a href="#privacidade" className="hover:underline flex items-center gap-2"><span>1.</span> Privacidade e Segurança</a>
+                    <a href="#carregamento" className="hover:underline flex items-center gap-2"><span>2.</span> Carregamento e Configuração</a>
+                    <a href="#ambiguidade" className="hover:underline flex items-center gap-2"><span>3.</span> Revisão de Ambiguidade</a>
+                    <a href="#entidades" className="hover:underline flex items-center gap-2"><span>4.</span> Gestão de Entidades</a>
+                    <a href="#editor" className="hover:underline flex items-center gap-2"><span>5.</span> Edição de Detalhe (O Bisturi)</a>
+                    <a href="#conhecimento" className="hover:underline flex items-center gap-2"><span>6.</span> Conhecimento Global</a>
+                    <a href="#exportacao" className="hover:underline flex items-center gap-2"><span>7.</span> Exportação e Resultados</a>
+                    <a href="#dicas" className="hover:underline flex items-center gap-2"><span>8.</span> Dicas de Especialista</a>
+                  </div>
+                </section>
+
+                {/* Intro Section */}
+                <section id="privacidade" className="space-y-6">
+                  <div className="flex items-center gap-4 text-indigo-600 border-b-2 border-indigo-100 pb-4">
+                    <Shield className="w-10 h-10" />
+                    <h3 className="text-3xl font-extrabold tracking-tight">Privacidade e Segurança Local</h3>
+                  </div>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-start">
+                    <div className="space-y-4">
+                      <p className="text-lg leading-relaxed text-gray-600">
+                        O <strong>Anonimiza PII</strong> foi desenvolvido para responder às necessidades rigorosas de proteção de dados no setor jurídico. A sua arquitetura é baseada no princípio de <strong>"Privacidade por Design"</strong>.
+                      </p>
+                      <div className="space-y-4">
+                        <div className="flex gap-4 p-4 bg-green-50 rounded-2xl border border-green-100">
+                          <Lock className="w-6 h-6 text-green-600 flex-shrink-0" />
+                          <div>
+                            <h5 className="font-bold text-green-900">Processamento 100% Local</h5>
+                            <p className="text-sm text-green-800">Os seus documentos nunca saem do seu computador. Todo o processamento ocorre na memória do seu navegador.</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-4 p-4 bg-blue-50 rounded-2xl border border-blue-100">
+                          <Zap className="w-6 h-6 text-blue-600 flex-shrink-0" />
+                          <div>
+                            <h5 className="font-bold text-blue-900">Sem Inteligência Artificial Externa</h5>
+                            <p className="text-sm text-blue-800">Utilizamos algoritmos de Processamento de Linguagem Natural (NLP) locais. Não enviamos dados para APIs de terceiros (como OpenAI ou Google Cloud) para treino ou análise.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 p-8 rounded-3xl border border-gray-200 shadow-inner">
+                      <h5 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-6 text-center">Arquitetura de Segurança</h5>
+                      <div className="relative h-40 flex items-center justify-center">
+                        <div className="w-24 h-24 bg-white rounded-2xl shadow-lg border border-gray-100 flex items-center justify-center z-10">
+                          <User className="w-10 h-10 text-indigo-600" />
+                        </div>
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="w-48 h-48 border-4 border-dashed border-indigo-100 rounded-full animate-[spin_20s_linear_infinite]" />
+                        </div>
+                        <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-indigo-600 text-white px-3 py-1 rounded-full text-[10px] font-bold">BROWSER</div>
+                      </div>
+                      <p className="text-center text-xs text-gray-400 mt-4 italic">Os dados permanecem no círculo de confiança do seu navegador.</p>
+                    </div>
+                  </div>
+                </section>
+
+                {/* Step 1: Upload */}
+                <section id="carregamento" className="space-y-8">
+                  <div className="flex items-center gap-4 text-indigo-600">
+                    <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl font-black shadow-lg shadow-indigo-200">1</div>
+                    <h3 className="text-2xl font-bold">Início: Carregamento e Configuração</h3>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div className="space-y-4">
+                      <h4 className="text-lg font-bold text-gray-700">Formatos Suportados</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {['PDF', 'DOCX', 'XLSX', 'TXT'].map(ext => (
+                          <span key={ext} className="px-3 py-1 bg-gray-100 text-gray-600 rounded-lg font-mono font-bold text-xs border border-gray-200">{ext}</span>
+                        ))}
+                      </div>
+                      <p className="text-gray-600">Pode arrastar vários ficheiros em simultâneo para a zona de documentos.</p>
+                      
+                      <div className="p-5 bg-indigo-50 rounded-2xl border border-indigo-100 space-y-3">
+                        <div className="flex items-center gap-2 text-indigo-700 font-bold">
+                          <Link className="w-4 h-4" />
+                          <span>Documentos Relacionados</span>
+                        </div>
+                        <p className="text-sm text-indigo-800">
+                          Esta opção é vital para processos com múltiplos volumes. Quando ativa, a app garante que o mesmo nome (ex: "João Silva") receba o mesmo pseudónimo (ex: "NOME_1") em todos os ficheiros carregados.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+                      <div className="flex items-center justify-between border-b pb-2">
+                        <span className="text-xs font-bold text-gray-400 uppercase">Interface de Upload</span>
+                      </div>
+                      <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 flex flex-col items-center justify-center text-gray-400">
+                        <Upload className="w-8 h-8 mb-2" />
+                        <span className="text-xs font-medium">Arraste os seus ficheiros aqui</span>
+                      </div>
+                      <div className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg border border-gray-100">
+                        <div className="w-4 h-4 bg-indigo-600 rounded flex items-center justify-center">
+                          <Check className="w-3 h-3 text-white" />
+                        </div>
+                        <span className="text-xs font-bold text-gray-700">Documentos Relacionados</span>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* Step 2: Ambiguity */}
+                <section id="ambiguidade" className="space-y-8">
+                  <div className="flex items-center gap-4 text-indigo-600">
+                    <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl font-black shadow-lg shadow-indigo-200">2</div>
+                    <h3 className="text-2xl font-bold">Revisão de Ambiguidade: O Filtro Inicial</h3>
+                  </div>
+                  
+                  <div className="space-y-6">
+                    <p className="text-gray-600 leading-relaxed">
+                      Após o scan, a app deteta elementos que podem conter várias pessoas "coladas". Esta etapa impede que o algoritmo de agrupamento cometa erros graves.
+                    </p>
+                    
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      <div className="p-6 bg-amber-50 rounded-2xl border border-amber-100 space-y-3">
+                        <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center text-amber-600">
+                          <Scissors className="w-5 h-5" />
+                        </div>
+                        <h5 className="font-bold text-amber-900">Dividir por "e"</h5>
+                        <p className="text-xs text-amber-800">Separa nomes como "João Silva e Maria Santos" em dois registos independentes.</p>
+                      </div>
+                      <div className="p-6 bg-amber-50 rounded-2xl border border-amber-100 space-y-3">
+                        <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center text-amber-600">
+                          <Unlink className="w-5 h-5" />
+                        </div>
+                        <h5 className="font-bold text-amber-900">Dividir por Vírgula</h5>
+                        <p className="text-xs text-amber-800">Ideal para listas de testemunhas ou partes separadas por vírgulas.</p>
+                      </div>
+                      <div className="p-6 bg-amber-50 rounded-2xl border border-amber-100 space-y-3">
+                        <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center text-amber-600">
+                          <Shield className="w-5 h-5" />
+                        </div>
+                        <h5 className="font-bold text-amber-900">Exceção Global</h5>
+                        <p className="text-xs text-amber-800">Se a app detetar um termo que não deve ser anonimizado, use o escudo para o ignorar para sempre.</p>
+                      </div>
+                    </div>
+
+                    <div className="bg-gray-900 p-6 rounded-3xl overflow-hidden shadow-2xl">
+                      <div className="flex items-center gap-2 mb-4">
+                        <div className="w-3 h-3 bg-red-500 rounded-full" />
+                        <div className="w-3 h-3 bg-yellow-500 rounded-full" />
+                        <div className="w-3 h-3 bg-green-500 rounded-full" />
+                        <span className="text-[10px] text-gray-500 font-mono ml-2">AMBIGUITY_REVIEW_MODAL.EXE</span>
+                      </div>
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between p-3 bg-gray-800 rounded-xl border border-gray-700">
+                          <span className="text-white font-medium">Armindo Pereira e Liliana Ferreira</span>
+                          <div className="flex gap-2">
+                            <div className="px-2 py-1 bg-indigo-600 text-white text-[10px] font-bold rounded">DIVIDIR POR "E"</div>
+                            <div className="px-2 py-1 bg-gray-700 text-gray-400 text-[10px] font-bold rounded">MANTER ASSIM</div>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between p-3 bg-gray-800 rounded-xl border border-gray-700 opacity-50">
+                          <span className="text-white font-medium">Tribunal da Relação de Lisboa</span>
+                          <div className="flex gap-2">
+                            <div className="p-1 bg-gray-700 text-white rounded"><Shield className="w-3 h-3" /></div>
+                            <div className="px-2 py-1 bg-green-600 text-white text-[10px] font-bold rounded">REVISADO</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* Step 3: Entity List */}
+                <section id="entidades" className="space-y-8">
+                  <div className="flex items-center gap-4 text-indigo-600">
+                    <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl font-black shadow-lg shadow-indigo-200">3</div>
+                    <h3 className="text-2xl font-bold">Gestão de Entidades: A Lista Mestra</h3>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
+                    <div className="space-y-6">
+                      <p className="text-gray-600">Aqui é onde passa a maior parte do tempo. Os nomes são agrupados automaticamente, mas tem controlo total sobre cada um.</p>
+                      
+                      <div className="space-y-4">
+                        <div className="flex items-start gap-4">
+                          <div className="w-8 h-8 bg-indigo-100 text-indigo-600 rounded-lg flex items-center justify-center flex-shrink-0"><Plus className="w-4 h-4" /></div>
+                          <div>
+                            <h6 className="font-bold text-gray-900">Agrupamento Manual</h6>
+                            <p className="text-sm text-gray-500">Selecione dois ou mais elementos e clique no botão de grupo para os unir sob o mesmo pseudónimo.</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-4">
+                          <div className="w-8 h-8 bg-red-100 text-red-600 rounded-lg flex items-center justify-center flex-shrink-0"><Unlink className="w-4 h-4" /></div>
+                          <div>
+                            <h6 className="font-bold text-gray-900">Dissolver Grupo</h6>
+                            <p className="text-sm text-gray-500">Se o sistema agrupou pessoas erradas, use este botão para separar todos os elementos do grupo.</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-4">
+                          <div className="w-8 h-8 bg-gray-100 text-gray-600 rounded-lg flex items-center justify-center flex-shrink-0"><Search className="w-4 h-4" /></div>
+                          <div>
+                            <h6 className="font-bold text-gray-900">Filtros Inteligentes</h6>
+                            <p className="text-sm text-gray-500">Filtre por tipo (NOME, LOCAL, PHONE, etc.) ou use a barra de pesquisa para encontrar rapidamente um termo.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-4">
+                      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+                        <div className="p-3 bg-gray-50 border-b border-gray-100 flex justify-between items-center">
+                          <span className="text-[10px] font-bold text-gray-400 uppercase">Exemplo de Grupo</span>
+                          <Unlink className="w-3 h-3 text-red-400" />
+                        </div>
+                        <div className="p-4 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <div className="w-2 h-2 bg-indigo-600 rounded-full" />
+                              <span className="font-bold text-sm">Maria Silva</span>
+                            </div>
+                            <span className="text-[10px] font-mono bg-gray-100 px-2 py-0.5 rounded">NOME_1</span>
+                          </div>
+                          <div className="pl-4 space-y-2 border-l-2 border-gray-100">
+                            <div className="flex items-center justify-between text-xs text-gray-500">
+                              <span>Maria S. Silva</span>
+                              <Scissors className="w-3 h-3" />
+                            </div>
+                            <div className="flex items-center justify-between text-xs text-gray-500">
+                              <span>M. Silva</span>
+                              <Trash2 className="w-3 h-3" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* Step 4: Detail Editor */}
+                <section id="editor" className="space-y-8">
+                  <div className="flex items-center gap-4 text-indigo-600">
+                    <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl font-black shadow-lg shadow-indigo-200">4</div>
+                    <h3 className="text-2xl font-bold">Edição de Detalhe: O Bisturi</h3>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+                    <div className="bg-white border border-gray-200 rounded-3xl shadow-xl overflow-hidden">
+                      <div className="p-4 bg-indigo-600 text-white flex justify-between items-center">
+                        <span className="text-xs font-bold uppercase">Editor de Elemento</span>
+                        <X className="w-4 h-4" />
+                      </div>
+                      <div className="p-6 space-y-6">
+                        <div className="p-4 bg-gray-50 rounded-xl text-xs leading-relaxed border border-gray-100">
+                          <span className="text-gray-400">...o depoimento de </span>
+                          <span className="bg-yellow-200 px-1 rounded font-bold mx-1">João Manuel Silva</span>
+                          <span className="text-gray-400"> foi decisivo para...</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-gray-400 uppercase">Original</span>
+                            <div className="p-2 bg-gray-50 rounded border text-xs">João Manuel Silva</div>
+                          </div>
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-gray-400 uppercase">Pseudónimo</span>
+                            <div className="p-2 bg-indigo-50 rounded border border-indigo-100 text-xs font-bold text-indigo-600">NOME_4</div>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <div className="flex-1 p-2 bg-gray-100 rounded text-[10px] font-bold text-center">EXPANDIR INÍCIO</div>
+                          <div className="flex-1 p-2 bg-gray-100 rounded text-[10px] font-bold text-center">EXPANDIR FIM</div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-6">
+                      <h4 className="text-xl font-bold text-gray-900">Funcionalidades do Editor</h4>
+                      <ul className="space-y-4">
+                        <li className="flex gap-4">
+                          <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600 flex-shrink-0"><Eye className="w-5 h-5" /></div>
+                          <div>
+                            <h6 className="font-bold text-gray-900">Visualização de Contexto</h6>
+                            <p className="text-sm text-gray-500">Veja exatamente onde o nome aparece no documento original para não ter dúvidas sobre quem se trata.</p>
+                          </div>
+                        </li>
+                        <li className="flex gap-4">
+                          <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600 flex-shrink-0"><Plus className="w-5 h-5" /></div>
+                          <div>
+                            <h6 className="font-bold text-gray-900">Ajuste de Limites</h6>
+                            <p className="text-sm text-gray-500">Se a app "cortou" um apelido ou apanhou uma palavra a mais, use os botões de Expandir/Contrair para ajustar a seleção com precisão de caractere.</p>
+                          </div>
+                        </li>
+                        <li className="flex gap-4">
+                          <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600 flex-shrink-0"><Link className="w-5 h-5" /></div>
+                          <div>
+                            <h6 className="font-bold text-gray-900">Mesclagem Direta</h6>
+                            <p className="text-sm text-gray-500">Pode unir o elemento atual a qualquer outro grupo existente diretamente do editor.</p>
+                          </div>
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                </section>
+
+                {/* Step 5: Knowledge Base */}
+                <section id="conhecimento" className="space-y-8">
+                  <div className="flex items-center gap-4 text-indigo-600">
+                    <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl font-black shadow-lg shadow-indigo-200">5</div>
+                    <h3 className="text-2xl font-bold">Conhecimento Global: Exceções, Juízes e Autores</h3>
+                  </div>
+                  
+                  <div className="space-y-6">
+                    <p className="text-gray-600">O sistema mantém uma base de dados de termos que devem ser tratados de forma especial em todos os documentos.</p>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      <div className="p-6 bg-white border border-gray-200 rounded-3xl shadow-sm space-y-4">
+                        <div className="w-12 h-12 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center"><Shield className="w-6 h-6" /></div>
+                        <h5 className="font-bold text-gray-900">Exceções</h5>
+                        <p className="text-sm text-gray-500">Nomes de instituições, cidades ou termos técnicos que a app pode confundir com nomes de pessoas. Estes termos são removidos da anonimização.</p>
+                      </div>
+                      <div className="p-6 bg-white border border-gray-200 rounded-3xl shadow-sm space-y-4">
+                        <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center"><Scale className="w-6 h-6" /></div>
+                        <h5 className="font-bold text-gray-900">Juízes</h5>
+                        <p className="text-sm text-gray-500">Pode carregar uma lista oficial de juízes. Quando detetados, são marcados como tal e pode decidir se os mantém ou anonimiza.</p>
+                      </div>
+                      <div className="p-6 bg-white border border-gray-200 rounded-3xl shadow-sm space-y-4">
+                        <div className="w-12 h-12 bg-orange-100 text-orange-600 rounded-2xl flex items-center justify-center"><User className="w-6 h-6" /></div>
+                        <h5 className="font-bold text-gray-900">Autores</h5>
+                        <p className="text-sm text-gray-500">Semelhante aos juízes, para identificar magistrados do Ministério Público ou advogados específicos.</p>
+                      </div>
+                    </div>
+
+                    <div className="p-6 bg-indigo-50 rounded-3xl border border-indigo-100">
+                      <h6 className="font-bold text-indigo-900 mb-2 flex items-center gap-2">
+                        <Download className="w-4 h-4" />
+                        Importação de Listas
+                      </h6>
+                      <p className="text-sm text-indigo-800">
+                        Não precisa de digitar um a um. Pode importar ficheiros PDF ou TXT com listas de nomes e a app extrairá e adicionará todos automaticamente à base de conhecimento.
+                      </p>
+                    </div>
+                  </div>
+                </section>
+
+                {/* Step 6: Export */}
+                <section id="exportacao" className="space-y-8">
+                  <div className="flex items-center gap-4 text-indigo-600">
+                    <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl font-black shadow-lg shadow-indigo-200">6</div>
+                    <h3 className="text-2xl font-bold">Exportação e Resultados</h3>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+                    <div className="space-y-6">
+                      <p className="text-gray-600">O trabalho termina com a geração dos novos documentos. O sistema garante que a formatação original é preservada tanto quanto possível.</p>
+                      
+                      <div className="space-y-4">
+                        <div className="flex gap-4 items-center p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                          <div className="w-10 h-10 bg-white rounded-xl shadow-sm flex items-center justify-center text-indigo-600"><FileText className="w-5 h-5" /></div>
+                          <div>
+                            <h6 className="font-bold text-gray-900">Documentos Anonimizados</h6>
+                            <p className="text-xs text-gray-500">PDFs, DOCX e TXT com os pseudónimos aplicados nos locais corretos.</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-4 items-center p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                          <div className="w-10 h-10 bg-white rounded-xl shadow-sm flex items-center justify-center text-green-600"><CheckCircle2 className="w-5 h-5" /></div>
+                          <div>
+                            <h6 className="font-bold text-gray-900">Relatório Excel</h6>
+                            <p className="text-xs text-gray-500">Uma tabela detalhada com a correspondência "Original &rarr; Pseudónimo" para arquivo interno.</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-4 items-center p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                          <div className="w-10 h-10 bg-white rounded-xl shadow-sm flex items-center justify-center text-amber-600"><Save className="w-5 h-5" /></div>
+                          <div>
+                            <h6 className="font-bold text-gray-900">Ficheiro de Projeto (JSON)</h6>
+                            <p className="text-xs text-gray-500">Guarde o estado atual para continuar o trabalho noutro dia ou noutro computador.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="bg-indigo-600 p-8 rounded-[40px] text-white space-y-6 shadow-2xl relative overflow-hidden">
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-2xl" />
+                      <div className="relative z-10 space-y-4">
+                        <h5 className="text-xl font-bold">Pronto para Exportar?</h5>
+                        <p className="text-indigo-100 text-sm">Verifique se todos os elementos importantes estão marcados como "Tratados" (verde) para garantir a máxima qualidade.</p>
+                        <div className="pt-4">
+                          <div className="w-full py-4 bg-white text-indigo-600 rounded-2xl font-black text-center shadow-xl flex items-center justify-center gap-3">
+                            <Download className="w-6 h-6" />
+                            EXPORTAR TUDO (.ZIP)
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* Final Tips */}
+                <section id="dicas" className="p-10 bg-gray-900 rounded-[40px] text-white">
+                  <div className="flex items-center gap-3 mb-8">
+                    <Zap className="w-8 h-8 text-amber-400" />
+                    <h3 className="text-2xl font-bold">Dicas de Especialista</h3>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+                    <div className="space-y-2">
+                      <h5 className="font-bold text-amber-400">Split View (Lado-a-Lado)</h5>
+                      <p className="text-sm text-gray-400 leading-relaxed">
+                        Ative o ícone de camadas no topo para abrir o visualizador duplo. Pode ler o documento original à esquerda e ver como fica anonimizado à direita, com sincronização de scroll.
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <h5 className="font-bold text-amber-400">Histórico de Ações</h5>
+                      <p className="text-sm text-gray-400 leading-relaxed">
+                        A app guarda as suas últimas 30 ações. Se apagar um grupo por engano ou fizer uma divisão errada, use as setas de Undo/Redo no cabeçalho para voltar atrás no tempo.
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <h5 className="font-bold text-amber-400">Atalhos de Teclado</h5>
+                      <p className="text-sm text-gray-400 leading-relaxed">
+                        No campo de adição de exceções, prima <strong>Enter</strong> para adicionar rapidamente um termo sem precisar de clicar no botão.
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <h5 className="font-bold text-amber-400">Limpeza de Projeto</h5>
+                      <p className="text-sm text-gray-400 leading-relaxed">
+                        O botão "Novo Projeto" limpa tudo da memória. Use-o sempre que terminar um caso para garantir que não mistura dados de processos diferentes.
+                      </p>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {showAmbiguityModal && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
             <motion.div 
