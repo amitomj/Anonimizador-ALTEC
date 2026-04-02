@@ -240,6 +240,8 @@ export interface Safelist {
   phrases_ignore: string[];
 }
 
+export const SAFELIST_LIMIT = 5000;
+
 export function scanText(
   text: string, 
   fileId: string, 

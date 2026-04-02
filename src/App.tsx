@@ -25,7 +25,8 @@ import {
   cleanName,
   PIIEntity,
   PII_COLORS,
-  Safelist
+  Safelist,
+  SAFELIST_LIMIT
 } from './lib/anonymizer';
 
 // Set up PDF.js worker
@@ -1616,17 +1617,31 @@ export default function App() {
       if (file.name.endsWith('.json')) {
         const text = await file.text();
         const data = JSON.parse(text);
+        
         // Suporta tanto o formato simples quanto o formato estruturado do user
+        // Se houver informação de frequência (count ou frequency), ordenar por ela
+        const extractWithSort = (items: any[]) => {
+          if (!Array.isArray(items)) return [];
+          return items
+            .map(item => {
+              if (typeof item === 'string') return { text: item, count: 0 };
+              if (typeof item === 'object' && item.text) return { text: item.text, count: item.count || item.frequency || 0 };
+              return null;
+            })
+            .filter((item): item is { text: string, count: number } => item !== null)
+            .sort((a, b) => b.count - a.count)
+            .map(item => item.text);
+        };
+
         if (data.words_ignore || data.phrases_ignore) {
-          newWords = data.words_ignore || [];
-          newPhrases = data.phrases_ignore || [];
+          newWords = extractWithSort(data.words_ignore || []);
+          newPhrases = extractWithSort(data.phrases_ignore || []);
         } else if (Array.isArray(data)) {
           // Fallback para array simples
-          data.forEach(item => {
-            if (typeof item === 'string') {
-              if (item.includes(' ')) newPhrases.push(item);
-              else newWords.push(item);
-            }
+          const sorted = extractWithSort(data);
+          sorted.forEach(item => {
+            if (item.includes(' ')) newPhrases.push(item);
+            else newWords.push(item);
           });
         }
       } else if (file.name.endsWith('.txt')) {
@@ -1644,13 +1659,18 @@ export default function App() {
       setSafelist(prev => {
         const words = new Set([...prev.words_ignore, ...newWords]);
         const phrases = new Set([...prev.phrases_ignore, ...newPhrases]);
+        
+        // Aplicar limites: 5000 palavras e 5000 expressões
+        const finalWords = Array.from(words).slice(0, SAFELIST_LIMIT);
+        const finalPhrases = Array.from(phrases).slice(0, SAFELIST_LIMIT);
+        
         return {
-          words_ignore: Array.from(words),
-          phrases_ignore: Array.from(phrases)
+          words_ignore: finalWords,
+          phrases_ignore: finalPhrases
         };
       });
 
-      showToast(`Safelist importada: ${newWords.length} palavras, ${newPhrases.length} frases.`, "success");
+      showToast(`Safelist importada (limite de ${SAFELIST_LIMIT} cada).`, "success");
     } catch (err) {
       console.error("Erro ao importar safelist:", err);
       showToast("Erro ao importar ficheiro de safelist.", "error");
@@ -1687,8 +1707,8 @@ export default function App() {
           const words = new Set([...prev.words_ignore, ...(data.safelist.words_ignore || [])]);
           const phrases = new Set([...prev.phrases_ignore, ...(data.safelist.phrases_ignore || [])]);
           return {
-            words_ignore: Array.from(words),
-            phrases_ignore: Array.from(phrases)
+            words_ignore: Array.from(words).slice(0, SAFELIST_LIMIT),
+            phrases_ignore: Array.from(phrases).slice(0, SAFELIST_LIMIT)
           };
         });
       }
@@ -1728,8 +1748,8 @@ export default function App() {
       const words = new Set([...prev.words_ignore, ...newWords]);
       const phrases = new Set([...prev.phrases_ignore, ...newPhrases]);
       return {
-        words_ignore: Array.from(words),
-        phrases_ignore: Array.from(phrases)
+        words_ignore: Array.from(words).slice(0, SAFELIST_LIMIT),
+        phrases_ignore: Array.from(phrases).slice(0, SAFELIST_LIMIT)
       };
     });
 
@@ -3730,6 +3750,14 @@ export default function App() {
                           if (exceptionsTab === 'SAFELIST') {
                             setSafelist(prev => {
                               const isPhrase = val.includes(' ');
+                              if (isPhrase && prev.phrases_ignore.length >= SAFELIST_LIMIT) {
+                                showToast(`Limite de ${SAFELIST_LIMIT} expressões atingido.`, "error");
+                                return prev;
+                              }
+                              if (!isPhrase && prev.words_ignore.length >= SAFELIST_LIMIT) {
+                                showToast(`Limite de ${SAFELIST_LIMIT} palavras atingido.`, "error");
+                                return prev;
+                              }
                               const words = isPhrase ? prev.words_ignore : Array.from(new Set([...prev.words_ignore, val]));
                               const phrases = isPhrase ? Array.from(new Set([...prev.phrases_ignore, val])) : prev.phrases_ignore;
                               return { words_ignore: words, phrases_ignore: phrases };
@@ -3751,6 +3779,14 @@ export default function App() {
                         if (exceptionsTab === 'SAFELIST') {
                           setSafelist(prev => {
                             const isPhrase = val.includes(' ');
+                            if (isPhrase && prev.phrases_ignore.length >= SAFELIST_LIMIT) {
+                              showToast(`Limite de ${SAFELIST_LIMIT} expressões atingido.`, "error");
+                              return prev;
+                            }
+                            if (!isPhrase && prev.words_ignore.length >= SAFELIST_LIMIT) {
+                              showToast(`Limite de ${SAFELIST_LIMIT} palavras atingido.`, "error");
+                              return prev;
+                            }
                             const words = isPhrase ? prev.words_ignore : Array.from(new Set([...prev.words_ignore, val]));
                             const phrases = isPhrase ? Array.from(new Set([...prev.phrases_ignore, val])) : prev.phrases_ignore;
                             return { words_ignore: words, phrases_ignore: phrases };
@@ -3774,7 +3810,7 @@ export default function App() {
                   <div className="flex items-center gap-4">
                     <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
                       {exceptionsTab === 'SAFELIST' 
-                        ? `${safelist.words_ignore.length + safelist.phrases_ignore.length} Termos`
+                        ? `${safelist.words_ignore.length + safelist.phrases_ignore.length} Termos (Máx ${SAFELIST_LIMIT * 2})`
                         : `${Object.entries(globalKnowledge).filter(([text, type]) => type === exceptionsTab && text.toLowerCase().includes(knowledgeSearch.toLowerCase())).length} Elementos`
                       }
                     </span>
@@ -3862,7 +3898,10 @@ export default function App() {
                   <div className="space-y-6">
                     {safelist.phrases_ignore.length > 0 && (
                       <div>
-                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Expressões (Phrases)</h4>
+                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-2 flex justify-between">
+                          <span>Expressões (Phrases)</span>
+                          <span>{safelist.phrases_ignore.length} / {SAFELIST_LIMIT}</span>
+                        </h4>
                         <div className="space-y-2">
                           {safelist.phrases_ignore
                             .filter(p => p.toLowerCase().includes(knowledgeSearch.toLowerCase()))
@@ -3887,7 +3926,10 @@ export default function App() {
                     
                     {safelist.words_ignore.length > 0 && (
                       <div>
-                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Palavras (Words)</h4>
+                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-2 flex justify-between">
+                          <span>Palavras (Words)</span>
+                          <span>{safelist.words_ignore.length} / {SAFELIST_LIMIT}</span>
+                        </h4>
                         <div className="flex flex-wrap gap-2">
                           {safelist.words_ignore
                             .filter(w => w.toLowerCase().includes(knowledgeSearch.toLowerCase()))
