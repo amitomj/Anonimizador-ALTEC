@@ -1378,6 +1378,11 @@ export default function App() {
     showToast(`Mantido: "${keep}". Removido: "${remove}".`, "success");
   };
 
+  const handleDiscardSuggestion = (index: number) => {
+    setDeduplicationSuggestions(prev => prev.filter((_, i) => i !== index));
+    showToast("Sugestão descartada.", "info");
+  };
+
   const handleSuggestGroups = () => {
     // More aggressive grouping for names
     let next: PIIEntity[] = [];
@@ -3746,6 +3751,15 @@ export default function App() {
                             Manter este
                           </button>
                         </div>
+                      </div>
+                      <div className="pt-2 border-t border-gray-100 flex justify-center">
+                        <button 
+                          onClick={() => handleDiscardSuggestion(idx)}
+                          className="text-xs font-bold text-gray-500 hover:text-indigo-600 transition-colors flex items-center gap-1.5 py-1 px-3 rounded-lg hover:bg-white"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Manter Ambos (Não são duplicados)
+                        </button>
                       </div>
                     </div>
                   ))
