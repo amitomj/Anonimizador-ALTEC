@@ -89,17 +89,17 @@ const PII_PATTERNS = {
   PHONE: /\b(?:(?:\+|00)351\s?)?[29]\d{8}\b/g,
   EMAIL: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
   IBAN: /\bPT50\s?\d{21}\b/gi,
-  JUIZ: /\bJuiz(?:\(a\))?\s+(?:de\s+Direito\s+)?([A-Z][a-zÀ-ÿ]+(?:\s+[A-Z][a-zÀ-ÿ]+)*)/g,
-  AUTOR: /\bAutor(?:\(a\))?\s+([A-Z][a-zÀ-ÿ]+(?:\s+[A-Z][a-zÀ-ÿ]+)*)/g,
+  JUIZ: /\bJuiz(?:\(a\))?\s+(?:de\s+Direito\s+)?([A-Z][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]+|\s+[A-Z][a-zÀ-ÿ]+)*)/g,
+  AUTOR: /\bAutor(?:\(a\))?\s+([A-Z][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]+|\s+[A-Z][a-zÀ-ÿ]+)*)/g,
   // More aggressive name patterns for Portuguese
-  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Réu|Mandatário|Advogado|Advogada)\s+([A-Z][a-zÀ-ÿ]+(?:\s+[A-Z][a-zÀ-ÿ]+)+)/g,
-  NOME_CAPS: /\b([A-ZÀ-Ÿ]{2,}(?:\s+[A-ZÀ-Ÿ]{2,}){1,5})\b/g,
+  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Réu|Mandatário|Advogado|Advogada)\s+([A-Z][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]+|\s+[A-Z][a-zÀ-ÿ]+)+)/g,
+  NOME_CAPS: /\b([A-ZÀ-Ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e|DE|DA|DO|DOS|DAS|E)\s+[A-ZÀ-Ÿ]{2,}|\s+[A-ZÀ-Ÿ]{2,}){1,5})\b/g,
   // Generic sequence of capitalized words (2 or more)
-  NOME_GENERIC: /\b([A-Z][a-zÀ-ÿ]{2,}(?:\s+(?:de|da|do|dos|das)\s+[A-Z][a-zÀ-ÿ]{2,})?(?:\s+[A-Z][a-zÀ-ÿ]{2,}){1,5})\b/g,
+  NOME_GENERIC: /\b([A-Z][a-zÀ-ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]{2,}|\s+[A-Z][a-zÀ-ÿ]{2,}){1,5})\b/g,
   // Pattern for names with "e" in the middle (often two people)
   NOME_AND: /\b([A-Z][a-zÀ-ÿ]{2,}(?:\s+[A-Z][a-zÀ-ÿ]{2,})*\s+e\s+[A-Z][a-zÀ-ÿ]{2,}(?:\s+[A-Z][a-zÀ-ÿ]{2,})*)\b/g,
   // Legal context patterns
-  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à)\s+([A-Z][a-zÀ-ÿ]{2,}(?:\s+[A-Z][a-zÀ-ÿ]{2,}){1,5})/g,
+  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à)\s+([A-Z][a-zÀ-ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]{2,}|\s+[A-Z][a-zÀ-ÿ]{2,}){1,5})/g,
 };
 
 const NAME_TITLES = [
@@ -224,6 +224,7 @@ export function normalizeText(text: string): string {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '') // Remove acentos
+    .replace(/^[.,;:\-\s\(\)\[\]]+|[.,;:\-\s\(\)\[\]]+$/g, '') // Remove pontuação e símbolos nas extremidades
     .replace(/\s+/g, ' ')           // Colapsa espaços múltiplos
     .trim();
 }
@@ -239,8 +240,6 @@ export interface Safelist {
   words_ignore: string[];
   phrases_ignore: string[];
 }
-
-export const SAFELIST_LIMIT = 5000;
 
 export function scanText(
   text: string, 
@@ -285,6 +284,30 @@ export function scanText(
 
   // PASSO B: Palavras a ignorar (serão usadas no filtro final dos matches)
   const normalizedWordsIgnore = new Set(safelist.words_ignore.map(w => normalizeText(w)));
+
+  // PASSO C: Conhecimento Global normalizado para busca rápida
+  const normalizedKnowledge = new Map<string, string>();
+  Object.entries(globalKnowledge).forEach(([k, t]) => {
+    normalizedKnowledge.set(normalizeText(k), t);
+  });
+
+  // PASSO D: Identificar nomes conhecidos (Autores e Juízes) no texto antes de outros padrões
+  // Isto garante que nomes completos sejam capturados mesmo que o NLP falhe
+  Object.entries(globalKnowledge).forEach(([name, type]) => {
+    if (type === 'AUTOR' || type === 'JUIZ') {
+      const regex = getRegexForTerm(name);
+      let match;
+      while ((match = regex.exec(text)) !== null) {
+        foundMatches.push({
+          text: match[0],
+          type: type,
+          start: match.index,
+          end: match.index + match[0].length,
+          reason: 'global-knowledge'
+        });
+      }
+    }
+  });
 
   // 1. Regex Patterns
     Object.entries(PII_PATTERNS).forEach(([type, pattern]) => {
@@ -399,7 +422,11 @@ export function scanText(
   });
 
   // 4. Merge and Deduplicate
-  const sortedMatches = foundMatches.sort((a, b) => a.start - b.start);
+  const sortedMatches = foundMatches.sort((a, b) => {
+    if (a.start !== b.start) return a.start - b.start;
+    return b.text.length - a.text.length;
+  });
+  
   const mergedMatches: typeof foundMatches = [];
   
   sortedMatches.forEach(match => {
@@ -409,13 +436,19 @@ export function scanText(
     }
     
     const last = mergedMatches[mergedMatches.length - 1];
+    // Se o match atual está contido no anterior, ignorar
+    if (match.start >= last.start && match.end <= last.end) return;
+    
+    // Se há sobreposição
     if (match.start < last.end) {
+      // Se o novo é significativamente mais longo ou começa na mesma posição e é mais longo
       if (match.text.length > last.text.length) {
         mergedMatches[mergedMatches.length - 1] = match;
       }
-    } else {
-      mergedMatches.push(match);
+      return;
     }
+    
+    mergedMatches.push(match);
   });
 
   const addEntity = (original: string, type: string, start: number, end: number) => {
@@ -433,9 +466,12 @@ export function scanText(
     const lower = trimmed.toLowerCase();
     const norm = normalizeText(trimmed);
     
+    // PASSO B (Reforço): Verificar Safelist novamente após limpeza
+    if (normalizedWordsIgnore.has(norm)) return;
+
     // PASSO C: Listas de anonimização forçada (Exceções Globais)
     // Se estiver nas exceções globais (que agora podem vir do conhecimento global), ignorar.
-    const knowledgeType = globalKnowledge[norm] || globalKnowledge[lower];
+    const knowledgeType = normalizedKnowledge.get(norm);
     if (knowledgeType === 'EXCECAO') return;
     
     const finalType = knowledgeType || type;
@@ -445,30 +481,45 @@ export function scanText(
 
     // Advanced Judge Identification based on globalKnowledge
     let identifiedType = finalType;
-    const judges = Object.entries(globalKnowledge).filter(([_, t]) => t === 'JUIZ').map(([n]) => n.toLowerCase());
-    const authors = Object.entries(globalKnowledge).filter(([_, t]) => t === 'AUTOR').map(([n]) => n.toLowerCase());
+    const judges: string[] = [];
+    const authors: string[] = [];
+    normalizedKnowledge.forEach((t, k) => {
+      if (t === 'JUIZ') judges.push(k);
+      if (t === 'AUTOR') authors.push(k);
+    });
+    
     const nameWords = norm.split(/\s+/).filter(w => w.length > 2);
 
     if (identifiedType !== 'JUIZ' && identifiedType !== 'AUTOR' && nameWords.length >= 2) {
-      // Rule: Identify as JUIZ if matches a judge (first name + one more)
-      const isJudgeMatch = judges.some(judgeName => {
-        const judgeWords = normalizeText(judgeName).split(/\s+/).filter(w => w.length > 2);
-        if (judgeWords.length < 2) return false;
+      // Calcular scores de correspondência para Juízes e Autores
+      let bestJudgeScore = 0;
+      let bestAuthorScore = 0;
+
+      judges.forEach(judgeName => {
+        const judgeWords = judgeName.split(/\s+/).filter(w => w.length > 2);
+        if (judgeWords.length < 2) return;
         const common = nameWords.filter(w => judgeWords.includes(w));
-        return common.length >= 2;
+        if (common.length >= 2) {
+          const score = common.length / Math.max(nameWords.length, judgeWords.length);
+          if (score > bestJudgeScore) bestJudgeScore = score;
+        }
       });
 
-      if (isJudgeMatch) {
-        identifiedType = 'JUIZ';
-      } else {
-        const isAuthorMatch = authors.some(authorName => {
-          const authorWords = normalizeText(authorName).split(/\s+/).filter(w => w.length > 2);
-          if (authorWords.length < 2) return false;
-          const common = nameWords.filter(w => authorWords.includes(w));
-          return common.length >= 2;
-        });
+      authors.forEach(authorName => {
+        const authorWords = authorName.split(/\s+/).filter(w => w.length > 2);
+        if (authorWords.length < 2) return;
+        const common = nameWords.filter(w => authorWords.includes(w));
+        if (common.length >= 2) {
+          const score = common.length / Math.max(nameWords.length, authorWords.length);
+          if (score > bestAuthorScore) bestAuthorScore = score;
+        }
+      });
 
-        if (isAuthorMatch) {
+      // Atribuir o tipo com melhor correspondência (mínimo de 2 palavras e score > 0.4)
+      if (bestJudgeScore > 0.4 || bestAuthorScore > 0.4) {
+        if (bestJudgeScore >= bestAuthorScore) {
+          identifiedType = 'JUIZ';
+        } else {
           identifiedType = 'AUTOR';
         }
       }

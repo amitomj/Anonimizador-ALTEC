@@ -5,7 +5,7 @@ import {
   History, Link, ChevronDown, ChevronRight, Search, Filter,
   MoreVertical, Copy, CheckCircle2, User, MapPin, Phone, 
   CreditCard, Mail, Hash, Briefcase, Scale, Trash, RotateCcw, RotateCw,
-  Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type, List
+  Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type, List, Pencil
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjs from 'pdfjs-dist';
@@ -25,8 +25,7 @@ import {
   cleanName,
   PIIEntity,
   PII_COLORS,
-  Safelist,
-  SAFELIST_LIMIT
+  Safelist
 } from './lib/anonymizer';
 
 // Set up PDF.js worker
@@ -344,6 +343,21 @@ export default function App() {
     const saved = localStorage.getItem('pii_safelist');
     return saved ? JSON.parse(saved) : { words_ignore: [], phrases_ignore: [] };
   });
+
+  const [editingKnowledge, setEditingKnowledge] = useState<{
+    original: string;
+    current: string;
+    type: 'KNOWLEDGE' | 'SAFELIST_WORD' | 'SAFELIST_PHRASE';
+    category?: string;
+  } | null>(null);
+
+  const [deduplicationSuggestions, setDeduplicationSuggestions] = useState<Array<{
+    item1: string;
+    item2: string;
+    score: number;
+    type: string;
+  }>>([]);
+  const [showDeduplicationModal, setShowDeduplicationModal] = useState(false);
 
   // Migration script for old global exceptions
   useEffect(() => {
@@ -1271,38 +1285,6 @@ export default function App() {
     }
   };
 
-  const handleLoadDefaultAuthors = () => {
-    setGlobalKnowledge(prev => {
-      const next = { ...prev };
-      // Clear existing authors
-      Object.keys(next).forEach(key => {
-        if (next[key] === 'AUTOR') delete next[key];
-      });
-      // Add default authors
-      DEFAULT_AUTHORS.forEach(name => {
-        next[name.toLowerCase()] = 'AUTOR';
-      });
-      return next;
-    });
-    showToast(`${DEFAULT_AUTHORS.length} autores carregados com sucesso.`, "success");
-  };
-
-  const handleLoadDefaultJudges = () => {
-    setGlobalKnowledge(prev => {
-      const next = { ...prev };
-      // Clear existing judges
-      Object.keys(next).forEach(key => {
-        if (next[key] === 'JUIZ') delete next[key];
-      });
-      // Add default judges
-      DEFAULT_JUDGES.forEach(name => {
-        next[name.toLowerCase()] = 'JUIZ';
-      });
-      return next;
-    });
-    showToast(`${DEFAULT_JUDGES.length} juízes carregados com sucesso.`, "success");
-  };
-
   const handleClearGlobalKnowledge = (type: string) => {
     setGlobalKnowledge(prev => {
       const next = { ...prev };
@@ -1318,6 +1300,82 @@ export default function App() {
   const handleClearAllGlobalKnowledge = () => {
     setGlobalKnowledge({});
     showToast("Todo o conhecimento global foi limpo.", "info");
+  };
+
+  const handleStartEditKnowledge = (text: string, type: 'KNOWLEDGE' | 'SAFELIST_WORD' | 'SAFELIST_PHRASE', category?: string) => {
+    setEditingKnowledge({ original: text, current: text, type, category });
+  };
+
+  const handleSaveEditKnowledge = () => {
+    if (!editingKnowledge) return;
+    const { original, current, type, category } = editingKnowledge;
+    const trimmed = current.trim();
+    if (!trimmed) return;
+
+    if (type === 'KNOWLEDGE') {
+      setGlobalKnowledge(prev => {
+        const next = { ...prev };
+        const oldType = next[original];
+        delete next[original];
+        next[trimmed.toLowerCase()] = category || oldType || 'EXCECAO';
+        return next;
+      });
+    } else if (type === 'SAFELIST_WORD') {
+      setSafelist(prev => ({
+        ...prev,
+        words_ignore: prev.words_ignore.map(w => w === original ? trimmed : w)
+      }));
+    } else if (type === 'SAFELIST_PHRASE') {
+      setSafelist(prev => ({
+        ...prev,
+        phrases_ignore: prev.phrases_ignore.map(p => p === original ? trimmed : p)
+      }));
+    }
+
+    setEditingKnowledge(null);
+    showToast("Alteração guardada com sucesso.", "success");
+  };
+
+  const handleIdentifyDuplicates = (type: string) => {
+    const items = Object.entries(globalKnowledge)
+      .filter(([_, t]) => t === type)
+      .map(([text]) => text);
+    
+    const suggestions: Array<{ item1: string, item2: string, score: number, type: string }> = [];
+    
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const s1 = items[i];
+        const s2 = items[j];
+        
+        // Simple similarity: check if one is contained in another or share many words
+        const w1 = s1.split(/\s+/);
+        const w2 = s2.split(/\s+/);
+        const common = w1.filter(w => w2.includes(w));
+        const score = common.length / Math.max(w1.length, w2.length);
+        
+        if (score >= 0.6 || s1.includes(s2) || s2.includes(s1)) {
+          suggestions.push({ item1: s1, item2: s2, score, type });
+        }
+      }
+    }
+    
+    if (suggestions.length === 0) {
+      showToast("Não foram encontradas duplicações óbvias.", "info");
+    } else {
+      setDeduplicationSuggestions(suggestions);
+      setShowDeduplicationModal(true);
+    }
+  };
+
+  const handleResolveDuplicate = (keep: string, remove: string) => {
+    setGlobalKnowledge(prev => {
+      const next = { ...prev };
+      delete next[remove];
+      return next;
+    });
+    setDeduplicationSuggestions(prev => prev.filter(s => !(s.item1 === remove || s.item2 === remove)));
+    showToast(`Mantido: "${keep}". Removido: "${remove}".`, "success");
   };
 
   const handleSuggestGroups = () => {
@@ -1617,31 +1675,17 @@ export default function App() {
       if (file.name.endsWith('.json')) {
         const text = await file.text();
         const data = JSON.parse(text);
-        
         // Suporta tanto o formato simples quanto o formato estruturado do user
-        // Se houver informação de frequência (count ou frequency), ordenar por ela
-        const extractWithSort = (items: any[]) => {
-          if (!Array.isArray(items)) return [];
-          return items
-            .map(item => {
-              if (typeof item === 'string') return { text: item, count: 0 };
-              if (typeof item === 'object' && item.text) return { text: item.text, count: item.count || item.frequency || 0 };
-              return null;
-            })
-            .filter((item): item is { text: string, count: number } => item !== null)
-            .sort((a, b) => b.count - a.count)
-            .map(item => item.text);
-        };
-
         if (data.words_ignore || data.phrases_ignore) {
-          newWords = extractWithSort(data.words_ignore || []);
-          newPhrases = extractWithSort(data.phrases_ignore || []);
+          newWords = data.words_ignore || [];
+          newPhrases = data.phrases_ignore || [];
         } else if (Array.isArray(data)) {
           // Fallback para array simples
-          const sorted = extractWithSort(data);
-          sorted.forEach(item => {
-            if (item.includes(' ')) newPhrases.push(item);
-            else newWords.push(item);
+          data.forEach(item => {
+            if (typeof item === 'string') {
+              if (item.includes(' ')) newPhrases.push(item);
+              else newWords.push(item);
+            }
           });
         }
       } else if (file.name.endsWith('.txt')) {
@@ -1659,18 +1703,13 @@ export default function App() {
       setSafelist(prev => {
         const words = new Set([...prev.words_ignore, ...newWords]);
         const phrases = new Set([...prev.phrases_ignore, ...newPhrases]);
-        
-        // Aplicar limites: 5000 palavras e 5000 expressões
-        const finalWords = Array.from(words).slice(0, SAFELIST_LIMIT);
-        const finalPhrases = Array.from(phrases).slice(0, SAFELIST_LIMIT);
-        
         return {
-          words_ignore: finalWords,
-          phrases_ignore: finalPhrases
+          words_ignore: Array.from(words),
+          phrases_ignore: Array.from(phrases)
         };
       });
 
-      showToast(`Safelist importada (limite de ${SAFELIST_LIMIT} cada).`, "success");
+      showToast(`Safelist importada: ${newWords.length} palavras, ${newPhrases.length} frases.`, "success");
     } catch (err) {
       console.error("Erro ao importar safelist:", err);
       showToast("Erro ao importar ficheiro de safelist.", "error");
@@ -1707,8 +1746,8 @@ export default function App() {
           const words = new Set([...prev.words_ignore, ...(data.safelist.words_ignore || [])]);
           const phrases = new Set([...prev.phrases_ignore, ...(data.safelist.phrases_ignore || [])]);
           return {
-            words_ignore: Array.from(words).slice(0, SAFELIST_LIMIT),
-            phrases_ignore: Array.from(phrases).slice(0, SAFELIST_LIMIT)
+            words_ignore: Array.from(words),
+            phrases_ignore: Array.from(phrases)
           };
         });
       }
@@ -1748,8 +1787,8 @@ export default function App() {
       const words = new Set([...prev.words_ignore, ...newWords]);
       const phrases = new Set([...prev.phrases_ignore, ...newPhrases]);
       return {
-        words_ignore: Array.from(words).slice(0, SAFELIST_LIMIT),
-        phrases_ignore: Array.from(phrases).slice(0, SAFELIST_LIMIT)
+        words_ignore: Array.from(words),
+        phrases_ignore: Array.from(phrases)
       };
     });
 
@@ -3659,6 +3698,118 @@ export default function App() {
           </div>
         )}
 
+        {showDeduplicationModal && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden"
+            >
+              <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-amber-50">
+                <div className="flex items-center gap-3">
+                  <Copy className="w-6 h-6 text-amber-600" />
+                  <h2 className="text-xl font-bold text-gray-900">Sugestões de Duplicação</h2>
+                </div>
+                <button onClick={() => setShowDeduplicationModal(false)} className="p-2 hover:bg-amber-100 rounded-full transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6 overflow-y-auto flex-1 space-y-4">
+                {deduplicationSuggestions.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">
+                    <CheckCircle2 className="w-12 h-12 mx-auto mb-4 text-green-500" />
+                    <p>Não foram encontradas mais duplicações.</p>
+                  </div>
+                ) : (
+                  deduplicationSuggestions.map((s, idx) => (
+                    <div key={idx} className="p-4 bg-gray-50 rounded-2xl border border-gray-200 space-y-3">
+                      <div className="flex justify-between items-start">
+                        <span className="text-xs font-bold text-amber-600 uppercase tracking-wider">Possível Duplicado ({Math.round(s.score * 100)}%)</span>
+                        <span className="text-[10px] bg-gray-200 px-1.5 py-0.5 rounded text-gray-600 font-bold uppercase">{s.type}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-gray-900 break-words">{s.item1}</p>
+                          <button 
+                            onClick={() => handleResolveDuplicate(s.item1, s.item2)}
+                            className="w-full py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-bold hover:bg-indigo-100 transition-all"
+                          >
+                            Manter este
+                          </button>
+                        </div>
+                        <div className="space-y-2 border-l border-gray-200 pl-4">
+                          <p className="text-sm font-medium text-gray-900 break-words">{s.item2}</p>
+                          <button 
+                            onClick={() => handleResolveDuplicate(s.item2, s.item1)}
+                            className="w-full py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-bold hover:bg-indigo-100 transition-all"
+                          >
+                            Manter este
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end">
+                <button 
+                  onClick={() => setShowDeduplicationModal(false)}
+                  className="px-6 py-2 bg-white border border-gray-200 rounded-xl font-bold hover:bg-gray-100 transition-all"
+                >
+                  Fechar
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {editingKnowledge && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-gray-100"
+            >
+              <div className="p-4 border-b border-gray-100 flex justify-between items-center">
+                <h3 className="font-bold text-gray-900 flex items-center gap-2">
+                  <Pencil className="w-4 h-4 text-indigo-600" />
+                  Editar Elemento
+                </h3>
+                <button onClick={() => setEditingKnowledge(null)} className="p-1 hover:bg-gray-100 rounded-full transition-colors">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Texto do Elemento</label>
+                  <input 
+                    autoFocus
+                    type="text" 
+                    value={editingKnowledge.current}
+                    onChange={(e) => setEditingKnowledge({ ...editingKnowledge, current: e.target.value })}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSaveEditKnowledge()}
+                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all font-medium"
+                  />
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <button 
+                    onClick={() => setEditingKnowledge(null)}
+                    className="flex-1 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-bold hover:bg-gray-200 transition-all"
+                  >
+                    Cancelar
+                  </button>
+                  <button 
+                    onClick={handleSaveEditKnowledge}
+                    className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200"
+                  >
+                    Guardar
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {showExceptionsModal && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
             <motion.div 
@@ -3750,14 +3901,6 @@ export default function App() {
                           if (exceptionsTab === 'SAFELIST') {
                             setSafelist(prev => {
                               const isPhrase = val.includes(' ');
-                              if (isPhrase && prev.phrases_ignore.length >= SAFELIST_LIMIT) {
-                                showToast(`Limite de ${SAFELIST_LIMIT} expressões atingido.`, "error");
-                                return prev;
-                              }
-                              if (!isPhrase && prev.words_ignore.length >= SAFELIST_LIMIT) {
-                                showToast(`Limite de ${SAFELIST_LIMIT} palavras atingido.`, "error");
-                                return prev;
-                              }
                               const words = isPhrase ? prev.words_ignore : Array.from(new Set([...prev.words_ignore, val]));
                               const phrases = isPhrase ? Array.from(new Set([...prev.phrases_ignore, val])) : prev.phrases_ignore;
                               return { words_ignore: words, phrases_ignore: phrases };
@@ -3779,14 +3922,6 @@ export default function App() {
                         if (exceptionsTab === 'SAFELIST') {
                           setSafelist(prev => {
                             const isPhrase = val.includes(' ');
-                            if (isPhrase && prev.phrases_ignore.length >= SAFELIST_LIMIT) {
-                              showToast(`Limite de ${SAFELIST_LIMIT} expressões atingido.`, "error");
-                              return prev;
-                            }
-                            if (!isPhrase && prev.words_ignore.length >= SAFELIST_LIMIT) {
-                              showToast(`Limite de ${SAFELIST_LIMIT} palavras atingido.`, "error");
-                              return prev;
-                            }
                             const words = isPhrase ? prev.words_ignore : Array.from(new Set([...prev.words_ignore, val]));
                             const phrases = isPhrase ? Array.from(new Set([...prev.phrases_ignore, val])) : prev.phrases_ignore;
                             return { words_ignore: words, phrases_ignore: phrases };
@@ -3810,7 +3945,7 @@ export default function App() {
                   <div className="flex items-center gap-4">
                     <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
                       {exceptionsTab === 'SAFELIST' 
-                        ? `${safelist.words_ignore.length + safelist.phrases_ignore.length} Termos (Máx ${SAFELIST_LIMIT * 2})`
+                        ? `${safelist.words_ignore.length + safelist.phrases_ignore.length} Termos`
                         : `${Object.entries(globalKnowledge).filter(([text, type]) => type === exceptionsTab && text.toLowerCase().includes(knowledgeSearch.toLowerCase())).length} Elementos`
                       }
                     </span>
@@ -3829,12 +3964,12 @@ export default function App() {
                     {exceptionsTab === 'JUIZ' && (
                       <div className="flex items-center gap-2">
                         <button 
-                          onClick={handleLoadDefaultJudges}
-                          className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 transition-colors bg-indigo-50 px-2 py-1 rounded"
-                          title="Carregar lista de juízes padrão do sistema"
+                          onClick={() => handleIdentifyDuplicates('JUIZ')}
+                          className="text-xs font-bold text-amber-600 hover:text-amber-800 flex items-center gap-1 transition-colors bg-amber-50 px-2 py-1 rounded"
+                          title="Identificar possíveis nomes duplicados"
                         >
-                          <FileText className="w-3 h-3" />
-                          Carregar Lista Padrão
+                          <Copy className="w-3 h-3" />
+                          Identificar Duplicados
                         </button>
                         <label className="cursor-pointer text-xs font-bold text-gray-500 hover:text-gray-700 flex items-center gap-1 transition-colors bg-gray-50 px-2 py-1 rounded" title="Importar novo ficheiro PDF/TXT de juízes">
                           <Upload className="w-3 h-3" />
@@ -3846,12 +3981,12 @@ export default function App() {
                     {exceptionsTab === 'AUTOR' && (
                       <div className="flex items-center gap-2">
                         <button 
-                          onClick={handleLoadDefaultAuthors}
-                          className="text-xs font-bold text-orange-600 hover:text-orange-800 flex items-center gap-1 transition-colors bg-orange-50 px-2 py-1 rounded"
-                          title="Carregar lista de autores padrão do sistema"
+                          onClick={() => handleIdentifyDuplicates('AUTOR')}
+                          className="text-xs font-bold text-amber-600 hover:text-amber-800 flex items-center gap-1 transition-colors bg-amber-50 px-2 py-1 rounded"
+                          title="Identificar possíveis nomes duplicados"
                         >
-                          <FileText className="w-3 h-3" />
-                          Carregar Lista Padrão
+                          <Copy className="w-3 h-3" />
+                          Identificar Duplicados
                         </button>
                         <label className="cursor-pointer text-xs font-bold text-gray-500 hover:text-gray-700 flex items-center gap-1 transition-colors bg-gray-50 px-2 py-1 rounded" title="Importar novo ficheiro PDF/TXT de autores">
                           <Upload className="w-3 h-3" />
@@ -3898,10 +4033,7 @@ export default function App() {
                   <div className="space-y-6">
                     {safelist.phrases_ignore.length > 0 && (
                       <div>
-                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-2 flex justify-between">
-                          <span>Expressões (Phrases)</span>
-                          <span>{safelist.phrases_ignore.length} / {SAFELIST_LIMIT}</span>
-                        </h4>
+                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Expressões (Phrases)</h4>
                         <div className="space-y-2">
                           {safelist.phrases_ignore
                             .filter(p => p.toLowerCase().includes(knowledgeSearch.toLowerCase()))
@@ -3909,15 +4041,24 @@ export default function App() {
                             .map(phrase => (
                               <div key={phrase} className="flex items-center justify-between bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 group">
                                 <span className="font-medium text-indigo-900">{phrase}</span>
-                                <button 
-                                  onClick={() => setSafelist(prev => ({
-                                    ...prev,
-                                    phrases_ignore: prev.phrases_ignore.filter(p => p !== phrase)
-                                  }))}
-                                  className="p-1.5 text-gray-400 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
+                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button 
+                                    onClick={() => handleStartEditKnowledge(phrase, 'SAFELIST_PHRASE')}
+                                    className="p-1.5 text-gray-400 hover:text-indigo-600 transition-colors"
+                                    title="Editar"
+                                  >
+                                    <Pencil className="w-4 h-4" />
+                                  </button>
+                                  <button 
+                                    onClick={() => setSafelist(prev => ({
+                                      ...prev,
+                                      phrases_ignore: prev.phrases_ignore.filter(p => p !== phrase)
+                                    }))}
+                                    className="p-1.5 text-gray-400 hover:text-red-500 transition-colors"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
                               </div>
                             ))}
                         </div>
@@ -3926,10 +4067,7 @@ export default function App() {
                     
                     {safelist.words_ignore.length > 0 && (
                       <div>
-                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-2 flex justify-between">
-                          <span>Palavras (Words)</span>
-                          <span>{safelist.words_ignore.length} / {SAFELIST_LIMIT}</span>
-                        </h4>
+                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Palavras (Words)</h4>
                         <div className="flex flex-wrap gap-2">
                           {safelist.words_ignore
                             .filter(w => w.toLowerCase().includes(knowledgeSearch.toLowerCase()))
@@ -3937,6 +4075,13 @@ export default function App() {
                             .map(word => (
                               <div key={word} className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-full border border-gray-200 group">
                                 <span className="text-sm">{word}</span>
+                                <button 
+                                  onClick={() => handleStartEditKnowledge(word, 'SAFELIST_WORD')}
+                                  className="text-gray-400 hover:text-indigo-600 transition-colors opacity-0 group-hover:opacity-100"
+                                  title="Editar"
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                </button>
                                 <button 
                                   onClick={() => setSafelist(prev => ({
                                     ...prev,
@@ -3975,8 +4120,15 @@ export default function App() {
                             <div key={text} className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-100 group">
                               <span className="font-medium">{text}</span>
                               <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button 
+                                  onClick={() => handleStartEditKnowledge(text, 'KNOWLEDGE', type as string)}
+                                  className="p-1.5 text-gray-400 hover:text-indigo-600 transition-colors"
+                                  title="Editar"
+                                >
+                                  <Pencil className="w-4 h-4" />
+                                </button>
                                 <select 
-                                  value={type}
+                                  value={type as string}
                                   onChange={(e) => setGlobalKnowledge(prev => ({ ...prev, [text]: e.target.value }))}
                                   className="text-xs bg-white border border-gray-200 rounded px-2 py-1 outline-none focus:border-indigo-300"
                                 >
