@@ -2056,10 +2056,18 @@ export default function App() {
               <div className="p-6 space-y-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-500 mb-2">Contexto no Documento</label>
-                  <div className="p-4 bg-gray-50 rounded-xl text-sm leading-relaxed">
-                    <span className="text-gray-400">{editingEntity.contextBefore}</span>
-                    <span className="bg-yellow-200 px-1 rounded font-bold mx-1">{editingEntity.original}</span>
-                    <span className="text-gray-400">{editingEntity.contextAfter}</span>
+                  <div className="p-4 bg-gray-50 rounded-xl text-sm leading-relaxed whitespace-pre-wrap text-center">
+                    <div className="text-gray-400 opacity-40 text-xs mb-2 italic line-clamp-1">
+                      {editingEntity.contextBefore?.split(/\s+/).slice(0, -8).join(' ') || '...'}
+                    </div>
+                    <div className="bg-white p-3 rounded-xl border border-gray-100 shadow-sm inline-block max-w-full">
+                      <span className="text-gray-500">{editingEntity.contextBefore?.split(/\s+/).slice(-8).join(' ')}</span>
+                      <span className="bg-yellow-200 px-1.5 py-0.5 rounded font-bold mx-1 text-gray-900 shadow-sm">{editingEntity.original}</span>
+                      <span className="text-gray-500">{editingEntity.contextAfter?.split(/\s+/).slice(0, 8).join(' ')}</span>
+                    </div>
+                    <div className="text-gray-400 opacity-40 text-xs mt-2 italic line-clamp-1">
+                      {editingEntity.contextAfter?.split(/\s+/).slice(8).join(' ') || '...'}
+                    </div>
                   </div>
                 </div>
 

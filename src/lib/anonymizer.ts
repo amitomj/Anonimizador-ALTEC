@@ -539,11 +539,14 @@ export function scanText(
       return;
     }
 
-    const before = text.substring(Math.max(0, start - 100), start);
-    const after = text.substring(end, Math.min(text.length, end + 100));
-    const wordsBefore = before.trim().split(/\s+/).slice(-5).join(' ');
-    const wordsAfter = after.trim().split(/\s+/).slice(0, 5).join(' ');
+    const before = text.substring(Math.max(0, start - 300), start);
+    const after = text.substring(end, Math.min(text.length, end + 300));
     
+    // Capture more words for better context in modals
+    const wordsBefore = before.trim().split(/\s+/).slice(-15).join(' ');
+    const wordsAfter = after.trim().split(/\s+/).slice(0, 15).join(' ');
+    
+    // Context snippet for quick lists (2 words before + entity + 2 words after)
     const contextWordsBefore = before.trim().split(/\s+/).slice(-2).join(' ');
     const contextWordsAfter = after.trim().split(/\s+/).slice(0, 2).join(' ');
     const contextSnippet = `${contextWordsBefore} ${trimmed} ${contextWordsAfter}`.trim();
