@@ -92,18 +92,18 @@ const PII_PATTERNS = {
   JUIZ: /\bJuiz(?:\(a\))?\s+(?:de\s+Direito\s+)?([A-Z][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]+|\s+[A-Z][a-zÀ-ÿ]+)*)/g,
   AUTOR: /\bAutor(?:\(a\))?\s+([A-Z][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]+|\s+[A-Z][a-zÀ-ÿ]+)*)/g,
   // More aggressive name patterns for Portuguese
-  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Réu|Mandatário|Advogado|Advogada)\s+([A-Z][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]+|\s+[A-Z][a-zÀ-ÿ]+)+)/g,
-  NOME_CAPS: /\b([A-ZÀ-Ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e|DE|DA|DO|DOS|DAS|E)\s+[A-ZÀ-Ÿ]{2,}|\s+[A-ZÀ-Ÿ]{2,}){1,5})\b/g,
+  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Réu|Mandatário|Advogado|Advogada|Recorrente|Recorrido)\s+([A-Z][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]+|\s+[A-Z][a-zÀ-ÿ]+)+)/g,
+  NOME_CAPS: /\b([A-ZÀ-Ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e|DE|DA|DO|DOS|DAS|E)\s+[A-ZÀ-Ÿ]{2,}|\s+[A-ZÀ-Ÿ]{2,}){1,8})\b/g,
   // Generic sequence of capitalized words (2 or more)
-  NOME_GENERIC: /\b([A-Z][a-zÀ-ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]{2,}|\s+[A-Z][a-zÀ-ÿ]{2,}){1,5})\b/g,
+  NOME_GENERIC: /\b([A-Z][a-zÀ-ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]{2,}|\s+[A-Z][a-zÀ-ÿ]{2,}){1,8})\b/g,
   // Pattern for names with "e" in the middle (often two people)
   NOME_AND: /\b([A-Z][a-zÀ-ÿ]{2,}(?:\s+[A-Z][a-zÀ-ÿ]{2,})*\s+e\s+[A-Z][a-zÀ-ÿ]{2,}(?:\s+[A-Z][a-zÀ-ÿ]{2,})*)\b/g,
   // Legal context patterns
-  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à)\s+([A-Z][a-zÀ-ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]{2,}|\s+[A-Z][a-zÀ-ÿ]{2,}){1,5})/g,
+  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à|recorrente|recorrido)\s+([A-Z][a-zÀ-ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]{2,}|\s+[A-Z][a-zÀ-ÿ]{2,}){1,8})/g,
 };
 
 const NAME_TITLES = [
-  'Colega', 'Autor', 'Autora', 'Réu', 'Ré', 'Mandatário', 'Advogado', 'Advogada', 
+  'Colega', 'Autor', 'Autora', 'Réu', 'Ré', 'Mandatário', 'Advogado', 'Advogada', 'Recorrente', 'Recorrido',
   'Dr\\.', 'Dra\\.', 'Sr\\.', 'Sra\\.', 'Eng\\.', 'Prof\\.', 'Juiz', 'Desembargador', 'Relator', 
   'Relatora', 'Venerando', 'Tribunal', 'Relação', 'Cfr\\.', 'In', 'Págs\\.', 'Pág\\.', 'Artigo', 'Art\\.', 'N\\.º', 
   'Processo', 'Proc\\.', 'Data', 'Hora', 'Local', 'Sede', 'Empresa', 'Sociedade', 'Trabalhador', 'Trabalhadora',

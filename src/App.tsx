@@ -5,7 +5,7 @@ import {
   History, Link, ChevronDown, ChevronRight, Search, Filter,
   MoreVertical, Copy, CheckCircle2, User, MapPin, Phone, 
   CreditCard, Mail, Hash, Briefcase, Scale, Trash, RotateCcw, RotateCw,
-  Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type, List, Pencil
+  Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type, List, Pencil, RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjs from 'pdfjs-dist';
@@ -1437,6 +1437,54 @@ export default function App() {
     showToast("Sugestões de grupos aplicadas", "success");
   };
 
+  const [manualTerm, setManualTerm] = useState('');
+  const [showManualAddModal, setShowManualAddModal] = useState(false);
+
+  const handleRescan = async () => {
+    if (files.length === 0) return;
+    setIsProcessing(true);
+    try {
+      // 1. Collect all currently identified entities to ensure consistency
+      const sessionKnowledge: Record<string, string> = { ...globalKnowledge };
+      entities.forEach(e => {
+        if (!e.ignored) {
+          sessionKnowledge[e.original.toLowerCase().trim()] = e.type;
+        }
+      });
+
+      const allNewEntities: PIIEntity[] = [];
+      
+      for (const file of files) {
+        const newEntities = scanText(file.content, file.id, entities, isRelated, sessionKnowledge, safelist);
+        allNewEntities.push(...newEntities);
+      }
+
+      // 2. Group and update
+      const grouped = groupSimilarEntities(allNewEntities, isRelated);
+      setEntities(grouped);
+      pushToHistory(grouped, files);
+      showToast("Re-análise de consistência concluída.", "success");
+    } catch (err) {
+      console.error("Erro durante a re-análise:", err);
+      showToast("Erro durante a re-análise.", "error");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleAddManualTerm = () => {
+    const term = manualTerm.trim();
+    if (!term) return;
+    
+    setGlobalKnowledge(prev => ({ ...prev, [term]: 'NOME' }));
+    setManualTerm('');
+    setShowManualAddModal(false);
+    showToast(`"${term}" adicionado ao conhecimento. Re-analisando...`, "info");
+    
+    // Trigger rescan automatically
+    setTimeout(handleRescan, 500);
+  };
+
   const handleExpandStart = () => {
     if (!editingEntity) return;
     const words = editingEntity.contextBefore.trim().split(/\s+/);
@@ -2252,6 +2300,14 @@ export default function App() {
 
             <div className="flex items-center gap-1 border-r border-gray-200 pr-4 mr-2">
               <button 
+                onClick={handleRescan}
+                disabled={files.length === 0 || isProcessing}
+                className={`p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-600 disabled:opacity-30 ${isProcessing ? 'animate-spin' : ''}`}
+                title="Re-analisar Documentos (Consistência Global)"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+              <button 
                 onClick={() => setSplitView(!splitView)}
                 className={`p-2 rounded-lg transition-colors ${splitView ? 'bg-indigo-100 text-indigo-600' : 'hover:bg-gray-100 text-gray-600'}`}
                 title="Visualização Lado-a-Lado (Split View)"
@@ -2411,6 +2467,16 @@ export default function App() {
                 </div>
                 <ChevronRight className="w-5 h-5 text-gray-400 group-hover:text-indigo-600 transition-all" />
               </button>
+
+              <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100 flex gap-3">
+                <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+                <div className="space-y-1">
+                  <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wider">Algo escapou?</h4>
+                  <p className="text-xs text-amber-800 leading-relaxed">
+                    Se a aplicação não detetou um nome, use o botão <strong>"Adicionar Termo"</strong> na lista de elementos ou o botão <strong>"Re-analisar"</strong> no topo para uma varredura de consistência.
+                  </p>
+                </div>
+              </div>
             </div>
           )}
 
@@ -2493,6 +2559,14 @@ export default function App() {
                     Independentes
                   </button>
                 </div>
+                <button 
+                  onClick={() => setShowManualAddModal(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-xl text-sm font-bold hover:bg-gray-50 transition-all shadow-sm"
+                  title="Adicionar termo manualmente para anonimização"
+                >
+                  <Plus className="w-4 h-4 text-indigo-600" />
+                  <span>Adicionar Termo</span>
+                </button>
                 <button 
                   onClick={handleSplitAllAndEntities}
                   className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 rounded-xl text-sm font-bold hover:bg-blue-100 transition-colors"
@@ -4176,6 +4250,74 @@ export default function App() {
                     )}
                   </>
                 )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      {/* Manual Add Modal */}
+      <AnimatePresence>
+        {showManualAddModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden"
+            >
+              <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-indigo-50/50">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-indigo-600 rounded-lg text-white">
+                    <Plus className="w-5 h-5" />
+                  </div>
+                  <h2 className="text-lg font-bold text-gray-900">Adicionar Termo Manual</h2>
+                </div>
+                <button onClick={() => setShowManualAddModal(false)} className="p-2 hover:bg-gray-200 rounded-full transition-colors">
+                  <X className="w-5 h-5 text-gray-500" />
+                </button>
+              </div>
+              
+              <div className="p-6 space-y-4">
+                <p className="text-sm text-gray-600">
+                  Insira um nome, morada ou termo que a aplicação não detetou automaticamente. 
+                  Este termo será adicionado ao conhecimento global e uma re-análise será iniciada.
+                </p>
+                
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase mb-2 tracking-wider">Termo a Anonimizar</label>
+                  <input 
+                    type="text" 
+                    value={manualTerm}
+                    onChange={(e) => setManualTerm(e.target.value)}
+                    placeholder="Ex: Maria Alice Gomes..."
+                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                    autoFocus
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddManualTerm()}
+                  />
+                </div>
+
+                <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 flex gap-3">
+                  <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+                  <p className="text-xs text-amber-800 leading-relaxed">
+                    <strong>Dica:</strong> Após adicionar, a aplicação irá procurar este termo exato em todos os documentos e sugerir a sua anonimização.
+                  </p>
+                </div>
+              </div>
+              
+              <div className="p-6 bg-gray-50 flex gap-3">
+                <button 
+                  onClick={() => setShowManualAddModal(false)}
+                  className="flex-1 px-4 py-2 text-gray-600 font-bold hover:bg-gray-200 rounded-xl transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={handleAddManualTerm}
+                  disabled={!manualTerm.trim()}
+                  className="flex-1 px-4 py-2 bg-indigo-600 text-white font-bold hover:bg-indigo-700 rounded-xl transition-colors disabled:opacity-50"
+                >
+                  Adicionar e Analisar
+                </button>
               </div>
             </motion.div>
           </div>
