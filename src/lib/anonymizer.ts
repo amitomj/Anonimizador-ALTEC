@@ -1,5 +1,3 @@
-import nlp from 'compromise';
-
 export type PIIType = string; // More flexible type system
 
 export interface PIIEntity {
@@ -31,6 +29,7 @@ export const PII_COLORS: Record<string, { bg: [number, number, number], text: [n
   IBAN: { bg: [0.7, 0.6, 0.1], text: [1, 1, 1], hex: '#B8860B', textHex: '#FFFFFF' },  // Ouro Velho
   AUTOR: { bg: [0, 0, 0], text: [1, 1, 1], hex: '#000000', textHex: '#FFFFFF' },      // Preto
   JUIZ: { bg: [0, 0, 0.5], text: [1, 1, 1], hex: '#000080', textHex: '#FFFFFF' },     // Azul Marinho
+  MATRICULA: { bg: [0.8, 0.8, 0], text: [0, 0, 0], hex: '#CCCC00', textHex: '#000000' }, // Amarelo Escuro
   TESTEMUNHA: { bg: [0.5, 0.5, 0.5], text: [1, 1, 1], hex: '#808080', textHex: '#FFFFFF' }, // Cinza
 };
 
@@ -53,7 +52,18 @@ const DEFAULT_GLOBAL_EXCEPTIONS = [
   'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
   'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo',
   'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira',
-  'Norma', 'Comissão', 'Trabalhadores', 'Sucursal', 'Facto', 'Provado'
+  'Norma', 'Comissão', 'Trabalhadores', 'Sucursal', 'Facto', 'Provado',
+  'CONSELHEIRO', 'DESEMBARGADOR', 'JUIZ', 'ACORDAM',
+  'recorrente', 'recorrida', 'recorrido', 'recorridas', 'recorridos', 'registada', 
+  'autor', 'autores', 'autora', 'autoras', 'réu', 'réus', 'ré', 'rés', 
+  'requerente', 'requerentes', 'requerida', 'requeridas', 'requerido', 'requeridos',
+  'adjunta', 'adjunto', 'desembargadora', 'desembargador', 'conselheira', 'conselheiro',
+  'termos em que', 'recurso de apelação', 'termo e duração', 'partes de cima', 'partes de baixo',
+  'família de tricotados', 'família dos tricotados', 'rua fernão magalhães',
+  'pelo exposto', 'em conformidade', 'nos termos do artigo', 'codigo de processo civil',
+  'supremo tribunal de justiça', 'juízo de instrução', 'tribunal da relacao',
+  'conforme o disposto', 'nestes termos', 'pede deferimento', 'valor da causa',
+  'custas de parte', 'procuradoria', 'taxa de justiça', 'apoio judiciário'
 ];
 
 const ENTITY_BLACKLIST = [
@@ -79,7 +89,16 @@ const ENTITY_BLACKLIST = [
   'REGIAO', 'PAIS', 'CONTINENTE', 'MUNDO', 'ABRIL', 'DOMINGO', 'NORMA', 'FACTO', 'PROVADO',
   'COMISSAO', 'TRABALHADORES', 'SUCURSAL', 'SOCIEDADE', 'RELATORIO', 'ADVOGADO', 'ADVOGADA',
   'CEDULA', 'PROCESSO', 'PROCEDIMENTO', 'REQUERIMENTO', 'DESPACHO', 'SENTENCA', 'ACORDAO',
-  'PAGINA', 'FOLHA', 'DOCUMENTO', 'ANEXO', 'CERTIDAO', 'NOTIFICACAO', 'CITACAO', 'EDITAL'
+  'PAGINA', 'FOLHA', 'DOCUMENTO', 'ANEXO', 'CERTIDAO', 'NOTIFICACAO', 'CITACAO', 'EDITAL',
+  'ACORDAM', 'CONSELHEIRO', 'DESEMBARGADOR', 'JUIZ',
+  'RECORRENTE', 'RECORRIDA', 'RECORRIDO', 'RECORRIDAS', 'RECORRIDOS', 'REGISTADA', 
+  'AUTOR', 'AUTORES', 'AUTORA', 'AUTORAS', 'REU', 'REUS', 'RE', 'RES', 
+  'REQUERENTE', 'REQUERENTES', 'REQUERIDA', 'REQUERIDAS', 'REQUERIDO', 'REQUERIDOS',
+  'ADJUNTA', 'ADJUNTO', 'DESEMBARGADORA', 'DESEMBARGADOR', 'CONSELHEIRA', 'CONSELHEIRO',
+  'TERMOS EM QUE', 'RECURSO DE APELACAO', 'TERMO E DURACAO', 'PARTES DE CIMA', 'PARTES DE BAIXO',
+  'FAMILIA DE TRICOTADOS', 'FAMILIA DOS TRICOTADOS', 'RUA FERNAO MAGALHAES',
+  'PELO EXPOSTO', 'EM CONFORMIDADE', 'NOS TERMOS DO ARTIGO', 'CODIGO DE PROCESSO CIVIL',
+  'NESTES TERMOS', 'PEDE DEFERIMENTO', 'VALOR DA CAUSA', 'TAXA DE JUSTICA'
 ];
 
 const PII_PATTERNS = {
@@ -89,17 +108,18 @@ const PII_PATTERNS = {
   PHONE: /\b(?:(?:\+|00)351\s?)?[29]\d{8}\b/g,
   EMAIL: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
   IBAN: /\bPT50\s?\d{21}\b/gi,
-  JUIZ: /\bJuiz(?:\(a\))?\s+(?:de\s+Direito\s+)?([A-Z][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]+|\s+[A-Z][a-zÀ-ÿ]+)*)/g,
-  AUTOR: /\bAutor(?:\(a\))?\s+([A-Z][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]+|\s+[A-Z][a-zÀ-ÿ]+)*)/g,
-  // More aggressive name patterns for Portuguese
-  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Réu|Mandatário|Advogado|Advogada|Recorrente|Recorrido)\s+([A-Z][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]+|\s+[A-Z][a-zÀ-ÿ]+)+)/g,
+  MATRICULA: /\b(?:[A-Z]{2}-\d{2}-\d{2}|\d{2}-\d{2}-[A-Z]{2}|\d{2}-[A-Z]{2}-\d{2}|[A-Z]{2}-\d{2}-[A-Z]{2})\b/g,
+  JUIZ: /\bJuiz(?:\(a\))?\s+(?:de\s+Direito\s+)?([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
+  AUTOR: /\bAutor(?:\(a\))?\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
+  // More aggressive name patterns for Portuguese - updated to handle internal spaces like "F erreira"
+  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Réu|Mandatário|Advogado|Advogada|Recorrente|Recorrido)\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))+)/g,
   NOME_CAPS: /\b([A-ZÀ-Ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e|DE|DA|DO|DOS|DAS|E)\s+[A-ZÀ-Ÿ]{2,}|\s+[A-ZÀ-Ÿ]{2,}){1,8})\b/g,
-  // Generic sequence of capitalized words (2 or more)
-  NOME_GENERIC: /\b([A-Z][a-zÀ-ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]{2,}|\s+[A-Z][a-zÀ-ÿ]{2,}){1,8})\b/g,
+  // Generic sequence of capitalized words (2 or more) - updated to handle internal spaces
+  NOME_GENERIC: /\b([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){1,8})\b/g,
   // Pattern for names with "e" in the middle (often two people)
-  NOME_AND: /\b([A-Z][a-zÀ-ÿ]{2,}(?:\s+[A-Z][a-zÀ-ÿ]{2,})*\s+e\s+[A-Z][a-zÀ-ÿ]{2,}(?:\s+[A-Z][a-zÀ-ÿ]{2,})*)\b/g,
+  NOME_AND: /\b([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*\s+e\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)\b/g,
   // Legal context patterns
-  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à|recorrente|recorrido)\s+([A-Z][a-zÀ-ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z][a-zÀ-ÿ]{2,}|\s+[A-Z][a-zÀ-ÿ]{2,}){1,8})/g,
+  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à|recorrente|recorrido)\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){1,8})/g,
 };
 
 const NAME_TITLES = [
@@ -209,6 +229,7 @@ export function getNextPseudonym(type: string, existingEntities: PIIEntity[]): s
     PASSPORT: 'PASSAPORTE',
     EMAIL: 'EMAIL',
     IBAN: 'IBAN',
+    MATRICULA: 'MATRICULA',
     AUTOR: 'AUTOR',
     JUIZ: 'JUIZ',
     TESTEMUNHA: 'TESTEMUNHA',
@@ -291,10 +312,10 @@ export function scanText(
     normalizedKnowledge.set(normalizeText(k), t);
   });
 
-  // PASSO D: Identificar nomes conhecidos (Autores e Juízes) no texto antes de outros padrões
+  // PASSO D: Identificar nomes conhecidos no texto antes de outros padrões
   // Isto garante que nomes completos sejam capturados mesmo que o NLP falhe
   Object.entries(globalKnowledge).forEach(([name, type]) => {
-    if (type === 'AUTOR' || type === 'JUIZ') {
+    if (type !== 'EXCECAO') {
       const regex = getRegexForTerm(name);
       let match;
       while ((match = regex.exec(text)) !== null) {
@@ -383,44 +404,6 @@ export function scanText(
     }
   });
 
-  // 3. NLP Detection (Names and Places)
-  const doc = nlp(text);
-  doc.people().json().forEach((p: any) => {
-    if (p.text.length > 3) {
-      const start = p.offset?.start || 0;
-      const end = start + p.text.length;
-
-      // Verificar Safelist
-      if (protectedRanges.some(r => start >= r.start && end <= r.end)) return;
-      if (normalizedWordsIgnore.has(normalizeText(p.text))) return;
-
-      foundMatches.push({
-        text: p.text,
-        type: 'NOME',
-        start: start,
-        end: end
-      });
-    }
-  });
-
-  doc.places().json().forEach((p: any) => {
-    if (p.text.length > 3) {
-      const start = p.offset?.start || 0;
-      const end = start + p.text.length;
-
-      // Verificar Safelist
-      if (protectedRanges.some(r => start >= r.start && end <= r.end)) return;
-      if (normalizedWordsIgnore.has(normalizeText(p.text))) return;
-
-      foundMatches.push({
-        text: p.text,
-        type: 'LOCAL',
-        start: start,
-        end: end
-      });
-    }
-  });
-
   // 4. Merge and Deduplicate
   const sortedMatches = foundMatches.sort((a, b) => {
     if (a.start !== b.start) return a.start - b.start;
@@ -474,26 +457,48 @@ export function scanText(
     const knowledgeType = normalizedKnowledge.get(norm);
     if (knowledgeType === 'EXCECAO') return;
     
-    const finalType = knowledgeType || type;
+    // Check if exists in existing entities (for grouping and property preservation)
+    // Prioritize finding by text to respect user decisions even if type would be different
+    const existing = existingEntities.find(e => normalizeText(e.original) === norm);
+
+    // Determine the type: 
+    // 1. If existing is treated/ignored, use its type
+    // 2. Otherwise use knowledgeType if available
+    // 3. Otherwise use the detected type
+    let identifiedType = (existing && (existing.treated || existing.ignored)) 
+      ? existing.type 
+      : (knowledgeType || type);
+
+    // Check if we already added this entity in the CURRENT scan of this file
+    // This prevents duplicate entities for multiple occurrences in the same file
+    const alreadyAdded = entities.find(e => normalizeText(e.original) === norm && e.type === identifiedType);
+    if (alreadyAdded) {
+      // Just ensure the fileId is included (should already be there)
+      if (!alreadyAdded.fileIds?.includes(fileId)) {
+        alreadyAdded.fileIds = [...(alreadyAdded.fileIds || []), fileId];
+      }
+      return;
+    }
 
     if (DEFAULT_GLOBAL_EXCEPTIONS.some(ex => normalizeText(ex) === norm)) return;
     if (ENTITY_BLACKLIST.includes(norm.toUpperCase())) return;
 
     // Advanced Judge Identification based on globalKnowledge
-    let identifiedType = finalType;
-    const judges: string[] = [];
-    const authors: string[] = [];
-    normalizedKnowledge.forEach((t, k) => {
-      if (t === 'JUIZ') judges.push(k);
-      if (t === 'AUTOR') authors.push(k);
-    });
-    
+    // ONLY if not already decided by user (treated) or explicit knowledge
     const nameWords = norm.split(/\s+/).filter(w => w.length > 2);
 
-    if (identifiedType !== 'JUIZ' && identifiedType !== 'AUTOR' && nameWords.length >= 2) {
+    if (!knowledgeType && (!existing || (!existing.treated && !existing.ignored)) && 
+        identifiedType !== 'JUIZ' && identifiedType !== 'AUTOR' && nameWords.length >= 2) {
       // Calcular scores de correspondência para Juízes e Autores
       let bestJudgeScore = 0;
       let bestAuthorScore = 0;
+      
+      const judges: string[] = [];
+      const authors: string[] = [];
+      normalizedKnowledge.forEach((t, k) => {
+        if (t === 'JUIZ') judges.push(k);
+        if (t === 'AUTOR') authors.push(k);
+      });
 
       judges.forEach(judgeName => {
         const judgeWords = judgeName.split(/\s+/).filter(w => w.length > 2);
@@ -525,17 +530,18 @@ export function scanText(
       }
     }
 
-    // Check if exists in existing entities (for grouping)
-    const existing = existingEntities.find(e => 
-      normalizeText(e.original) === norm && 
-      e.type === identifiedType &&
-      (isRelated || e.fileIds?.includes(fileId))
-    );
-
-    if (existing) {
-      if (!existing.fileIds?.includes(fileId)) {
-        existing.fileIds = [...(existing.fileIds || []), fileId];
-      }
+    if (existing && (existing.type === identifiedType || existing.treated || existing.ignored)) {
+      // Return a copy with updated fileIds if needed
+      const updatedFileIds = existing.fileIds?.includes(fileId) 
+        ? existing.fileIds 
+        : [...(existing.fileIds || []), fileId];
+        
+      entities.push({
+        ...existing,
+        type: identifiedType, // Update type if it was refined but not treated
+        pseudonym: existing.type !== identifiedType ? getNextPseudonym(identifiedType, [...existingEntities, ...entities]) : existing.pseudonym,
+        fileIds: updatedFileIds,
+      });
       return;
     }
 
@@ -650,99 +656,109 @@ export function groupSimilarEntities(entities: PIIEntity[], isRelated: boolean =
 
   const VERY_COMMON_NAMES = new Set(['maria', 'jose', 'manuel', 'antonio', 'joao', 'francisco', 'carlos', 'paulo', 'pedro', 'luis', 'ana', 'isabel', 'teresa', 'margarida', 'silva', 'santos', 'ferreira', 'pereira', 'oliveira', 'costa', 'rodrigues', 'martins', 'jesus']);
 
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (let i = 0; i < nameEntities.length; i++) {
-      for (let j = i + 1; j < nameEntities.length; j++) {
-        const e1 = nameEntities[i];
-        const e2 = nameEntities[j];
-        
-        if (e1.groupId === e2.groupId && e1.groupId !== undefined) continue;
-        if (!isRelated && e1.fileIds?.[0] !== e2.fileIds?.[0]) continue;
+  // Optimization: Use an adjacency list and find connected components to avoid O(N^2) while(changed)
+  const adj = new Map<number, number[]>();
+  
+  for (let i = 0; i < nameEntities.length; i++) {
+    for (let j = i + 1; j < nameEntities.length; j++) {
+      const e1 = nameEntities[i];
+      const e2 = nameEntities[j];
+      
+      if (!isRelated && e1.fileIds?.[0] !== e2.fileIds?.[0]) continue;
 
-        const w1 = getWords(e1.original);
-        const w2 = getWords(e2.original);
-        if (w1.length === 0 || w2.length === 0) continue;
+      const w1 = getWords(e1.original);
+      const w2 = getWords(e2.original);
+      if (w1.length === 0 || w2.length === 0) continue;
 
-        let isMatch = false;
+      let isMatch = false;
+      
+      if (e1.original.toLowerCase().trim() === e2.original.toLowerCase().trim()) {
+        isMatch = true;
+      }
+
+      if (!isMatch) {
+        const common = w1.filter(w => w2.includes(w));
+        const commonNonGeneric = common.filter(w => !VERY_COMMON_NAMES.has(w));
+        const similarity = common.length / Math.max(w1.length, w2.length);
         
-        // Exact match (already handled by step 2, but good for safety)
-        if (e1.original.toLowerCase().trim() === e2.original.toLowerCase().trim()) {
+        if (similarity >= 0.8) {
           isMatch = true;
-        }
-
-        if (!isMatch) {
-          const common = w1.filter(w => w2.includes(w));
-          const commonNonGeneric = common.filter(w => !VERY_COMMON_NAMES.has(w));
-          
-          const similarity = common.length / Math.max(w1.length, w2.length);
-          
-          // Strict rules for grouping:
-          // 1. Very high similarity (e.g. "Maria Silva" and "Maria S. Silva")
-          if (similarity >= 0.8) {
-            isMatch = true;
-          } 
-          // 2. One is a subset of the other
-          else if (w1.every(w => w2.includes(w)) || w2.every(w => w1.includes(w))) {
-            // Must share at least 2 words AND at least one non-generic word
-            if (common.length >= 2 && commonNonGeneric.length >= 1) {
-              // And the difference shouldn't be massive (max 2 words difference)
-              if (Math.abs(w1.length - w2.length) <= 2) {
-                isMatch = true;
-              }
+        } else if (w1.every(w => w2.includes(w)) || w2.every(w => w1.includes(w))) {
+          if (common.length >= 2 && commonNonGeneric.length >= 1) {
+            if (Math.abs(w1.length - w2.length) <= 2) {
+              isMatch = true;
             }
           }
-          // 3. Share many words including multiple non-generic ones
-          else if (common.length >= 3 && commonNonGeneric.length >= 2) {
-            isMatch = true;
-          }
+        } else if (common.length >= 3 && commonNonGeneric.length >= 2) {
+          isMatch = true;
         }
+      }
 
-        // Check for separators - if one has " e " and the other doesn't, they are likely different 
-        // (one is a pair, the other is an individual)
-        const hasSeparator1 = e1.original.toLowerCase().includes(' e ');
-        const hasSeparator2 = e2.original.toLowerCase().includes(' e ');
-        if (hasSeparator1 !== hasSeparator2) isMatch = false;
+      const hasSeparator1 = e1.original.toLowerCase().includes(' e ');
+      const hasSeparator2 = e2.original.toLowerCase().includes(' e ');
+      if (hasSeparator1 !== hasSeparator2) isMatch = false;
 
-        if (isMatch) {
-          const g1 = e1.groupId;
-          const g2 = e2.groupId;
-          
-          if (g1 && g2 && g1 !== g2) {
-            // Don't automatically merge two different manual groups
-            if (g1.startsWith('manual-group-') && g2.startsWith('manual-group-')) continue;
+      if (isMatch) {
+        if (!adj.has(i)) adj.set(i, []);
+        if (!adj.has(j)) adj.set(j, []);
+        adj.get(i)!.push(j);
+        adj.get(j)!.push(i);
+      }
+    }
+  }
 
-            // Merge groups, prioritizing manual ones
-            const targetG = g1.startsWith('manual-group-') ? g1 : (g2.startsWith('manual-group-') ? g2 : g1);
-            const sourceG = targetG === g1 ? g2 : g1;
-            
-            const p1 = e1.treated ? e1.pseudonym : (e2.treated ? e2.pseudonym : (e1.original.length >= e2.original.length ? e1.pseudonym : e2.pseudonym));
-            newEntities.forEach(e => {
-              if (e.groupId === sourceG) {
-                e.groupId = targetG;
-                e.pseudonym = p1;
-              }
-            });
-            changed = true;
-          } else if (g1 || g2) {
-            const targetG = g1 || g2;
-            const targetP = (g1 ? e1.pseudonym : e2.pseudonym);
-            e1.groupId = targetG;
-            e1.pseudonym = targetP;
-            e2.groupId = targetG;
-            e2.pseudonym = targetP;
-            changed = true;
-          } else {
-            const newG = `group-${e1.id}`;
-            const newP = e1.original.length >= e2.original.length ? e1.pseudonym : e2.pseudonym;
-            e1.groupId = newG;
-            e1.pseudonym = newP;
-            e2.groupId = newG;
-            e2.pseudonym = newP;
-            changed = true;
-          }
+  const visited = new Set<number>();
+  for (let i = 0; i < nameEntities.length; i++) {
+    if (visited.has(i)) continue;
+    
+    const component: number[] = [];
+    const queue = [i];
+    visited.add(i);
+    
+    while (queue.length > 0) {
+      const curr = queue.shift()!;
+      component.push(curr);
+      const neighbors = adj.get(curr) || [];
+      for (const neighbor of neighbors) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          queue.push(neighbor);
         }
+      }
+    }
+
+    if (component.length > 1) {
+      let targetG: string | undefined;
+      let targetP: string | undefined;
+      let isTreated = false;
+
+      for (const idx of component) {
+        const e = nameEntities[idx];
+        if (e.groupId?.startsWith('manual-group-')) {
+          targetG = e.groupId;
+          targetP = e.pseudonym;
+          isTreated = true;
+          break;
+        }
+        if (e.treated && !isTreated) {
+          targetG = e.groupId;
+          targetP = e.pseudonym;
+          isTreated = true;
+        }
+      }
+
+      if (!targetG) {
+        const longest = component.reduce((prev, curr) => 
+          nameEntities[curr].original.length > nameEntities[prev].original.length ? curr : prev, component[0]);
+        targetG = nameEntities[longest].groupId || `group-${nameEntities[longest].id}`;
+        targetP = nameEntities[longest].pseudonym;
+      }
+
+      for (const idx of component) {
+        const e = nameEntities[idx];
+        e.groupId = targetG;
+        e.pseudonym = targetP || e.pseudonym;
+        e.treated = isTreated || e.treated;
       }
     }
   }

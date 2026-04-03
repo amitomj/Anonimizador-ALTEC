@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { 
   Upload, FileText, Check, X, Trash2, Eye, EyeOff, 
   Layers, Plus, Scissors, Lock, Download, AlertCircle,
-  History, Link, ChevronDown, ChevronRight, Search, Filter,
+  History, Link, ChevronDown, ChevronUp, ChevronRight, Search, Filter,
   MoreVertical, Copy, CheckCircle2, User, MapPin, Phone, 
   CreditCard, Mail, Hash, Briefcase, Scale, Trash, RotateCcw, RotateCw,
   Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type, List, Pencil, RefreshCw
@@ -41,52 +41,101 @@ interface FileData {
   status: 'pending' | 'processing' | 'done' | 'error';
 }
 
-const HighlightText = ({ text, entities, mode }: { text: string, entities: PIIEntity[], mode: 'original' | 'anonymized' }) => {
+const HighlightText = memo(({ text, entities, mode, globalKnowledge, safelist }: { 
+  text: string, 
+  entities: PIIEntity[], 
+  mode: 'original' | 'anonymized',
+  globalKnowledge?: Record<string, string>,
+  safelist?: Safelist
+}) => {
   if (!text) return null;
   
-  // Filter entities that are actually being anonymized
-  const activeEntities = entities.filter(e => e.enabled && !e.ignored && e.type !== 'AUTOR' && e.type !== 'JUIZ');
-  if (activeEntities.length === 0) return <>{text}</>;
+  const result = useMemo(() => {
+    // Filter entities that are actually being anonymized
+    const activeEntities = entities.filter(e => e.enabled && !e.ignored && e.type !== 'AUTOR' && e.type !== 'JUIZ');
+    
+    const patterns = activeEntities.map(e => ({
+      pattern: mode === 'original' ? e.original : e.pseudonym,
+      entity: e
+    })).filter(p => p.pattern.length > 0);
 
-  const patterns = activeEntities.map(e => ({
-    pattern: mode === 'original' ? e.original : e.pseudonym,
-    entity: e
-  })).filter(p => p.pattern.length > 0);
+    // Identify potential untreated PII in original mode
+    const potentialUntreated: { text: string, type: string }[] = [];
+    if (mode === 'original') {
+      const untreatedPatterns: Record<string, RegExp> = {
+        NIF: /\b\d{9}\b/g,
+        CC: /\b\d{8}\s*\d\s*[A-Z]{2}\d\b/gi,
+        MATRICULA: /\b[A-Z0-9]{2}-[A-Z0-9]{2}-[A-Z0-9]{2}\b/g,
+        MORADA: /\b(?:Rua|Av\.|Avenida|Praça|Largo|Travessa)\s+[^,.;\n]{5,50}\b/gi
+      };
 
-  if (patterns.length === 0) return <>{text}</>;
+      Object.entries(untreatedPatterns).forEach(([type, regex]) => {
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+          const matchText = match[0];
+          const norm = matchText.toLowerCase().trim();
+          
+          const inEntities = entities.some(e => e.original.toLowerCase().trim() === norm);
+          const isException = globalKnowledge?.[norm] === 'EXCECAO';
+          const inSafelist = safelist?.words_ignore.some(w => w.toLowerCase() === norm) || 
+                            safelist?.phrases_ignore.some(p => norm.includes(p.toLowerCase()));
 
-  // Sort patterns by length descending to match longest first
-  patterns.sort((a, b) => b.pattern.length - a.pattern.length);
+          if (!inEntities && !isException && !inSafelist) {
+            potentialUntreated.push({ text: matchText, type });
+          }
+        }
+      });
+    }
 
-  const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Use a map to deduplicate patterns to avoid regex errors or redundant matches
-  const uniquePatterns = Array.from(new Set(patterns.map(p => p.pattern)));
-  const combinedRegex = new RegExp(`(${uniquePatterns.map(p => escapeRegExp(p)).join('|')})`, 'g');
-  
-  const parts = text.split(combinedRegex);
-  
+    const allPatterns = [
+      ...patterns.map(p => ({ pattern: p.pattern, type: p.entity.type, entity: p.entity })),
+      ...potentialUntreated.map(p => ({ pattern: p.text, type: p.type, entity: null }))
+    ];
+
+    if (allPatterns.length === 0) return { parts: [text], allPatterns: [] };
+
+    allPatterns.sort((a, b) => b.pattern.length - a.pattern.length);
+    const uniquePatterns = Array.from(new Set(allPatterns.map(p => p.pattern)));
+    const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const combinedRegex = new RegExp(`(${uniquePatterns.map(p => escapeRegExp(p)).join('|')})`, 'g');
+    
+    return { parts: text.split(combinedRegex), allPatterns };
+  }, [text, entities, mode, globalKnowledge, safelist]);
+
   return (
     <>
-      {parts.map((part, i) => {
-        const match = patterns.find(p => p.pattern === part);
+      {result.parts.map((part, i) => {
+        const match = result.allPatterns.find(p => p.pattern === part);
         if (match) {
-          const color = PII_COLORS[match.entity.type] || { hex: '#E5E7EB', textHex: '#374151' };
-          return (
-            <span 
-              key={i} 
-              className="px-0.5 rounded font-bold"
-              style={{ backgroundColor: color.hex, color: color.textHex }}
-              title={`${match.entity.type}: ${match.entity.original} -> ${match.entity.pseudonym}`}
-            >
-              {part}
-            </span>
-          );
+          if (match.entity) {
+            const color = PII_COLORS[match.entity.type] || { hex: '#E5E7EB', textHex: '#374151' };
+            return (
+              <span 
+                key={i} 
+                className="px-0.5 rounded font-bold treated-pii"
+                style={{ backgroundColor: color.hex, color: color.textHex }}
+                title={`${match.entity.type}: ${match.entity.original} -> ${match.entity.pseudonym}`}
+              >
+                {part}
+              </span>
+            );
+          } else {
+            return (
+              <span 
+                key={i} 
+                className="px-0.5 rounded border-b-2 border-dotted border-red-400 bg-red-50 text-red-700 cursor-help untreated-pii"
+                title={`Potencial ${match.type} não identificado. Selecione para adicionar.`}
+              >
+                {part}
+              </span>
+            );
+          }
         }
         return part;
       })}
     </>
   );
-};
+});
 
 const DEFAULT_JUDGES = [
   "Maria dos Prazeres Couceiro Pizarro Beleza", "Maria Clara Pereira de Sousa de Santiago Sottomayor", "Mário Belo Morgado",
@@ -230,6 +279,8 @@ export default function App() {
   const [hideIgnored, setHideIgnored] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [editingEntity, setEditingEntity] = useState<PIIEntity | null>(null);
+  const [splitResults, setSplitResults] = useState<{ original: string, type: string, id: string }[] | null>(null);
+  const [pendingManualTerm, setPendingManualTerm] = useState<{ text: string, x: number, y: number } | null>(null);
   const [copiedPseudonym, setCopiedPseudonym] = useState<string | null>(null);
   const [showMergeModal, setShowMergeModal] = useState(false);
   const [showExceptionsModal, setShowExceptionsModal] = useState(false);
@@ -253,9 +304,59 @@ export default function App() {
     const sourceEl = source === 'left' ? leftScrollRef.current : rightScrollRef.current;
     const targetEl = source === 'left' ? rightScrollRef.current : leftScrollRef.current;
     
-    if (sourceEl && targetEl && targetEl.scrollTop !== sourceEl.scrollTop) {
-      targetEl.scrollTop = sourceEl.scrollTop;
+    if (sourceEl && targetEl) {
+      const sourceMaxScroll = sourceEl.scrollHeight - sourceEl.clientHeight;
+      const targetMaxScroll = targetEl.scrollHeight - targetEl.clientHeight;
+      
+      if (sourceMaxScroll > 0 && targetMaxScroll > 0) {
+        const scrollPercentage = sourceEl.scrollTop / sourceMaxScroll;
+        const targetScrollTop = scrollPercentage * targetMaxScroll;
+        
+        if (Math.abs(targetEl.scrollTop - targetScrollTop) > 2) {
+          targetEl.scrollTop = targetScrollTop;
+        }
+      }
     }
+  };
+
+  const navigateUntreated = (direction: 'next' | 'prev') => {
+    const container = leftScrollRef.current;
+    if (!container) return;
+
+    const elements = Array.from(container.querySelectorAll('.untreated-pii'));
+    if (elements.length === 0) {
+      showToast("Não foram encontrados mais elementos potenciais.", "info");
+      return;
+    }
+
+    // Find current element in view
+    const viewTop = container.scrollTop;
+    let targetIndex = -1;
+
+    if (direction === 'next') {
+      targetIndex = elements.findIndex(el => (el as HTMLElement).offsetTop > viewTop + 100);
+      if (targetIndex === -1) targetIndex = 0; // Loop back
+    } else {
+      for (let i = elements.length - 1; i >= 0; i--) {
+        if ((elements[i] as HTMLElement).offsetTop < viewTop - 10) {
+          targetIndex = i;
+          break;
+        }
+      }
+      if (targetIndex === -1) targetIndex = elements.length - 1; // Loop back
+    }
+
+    const targetEl = elements[targetIndex] as HTMLElement;
+    container.scrollTo({
+      top: targetEl.offsetTop - 150,
+      behavior: 'smooth'
+    });
+    
+    // Highlight briefly
+    targetEl.classList.add('ring-4', 'ring-red-400', 'ring-opacity-50');
+    setTimeout(() => {
+      targetEl.classList.remove('ring-4', 'ring-red-400', 'ring-opacity-50');
+    }, 1500);
   };
 
   // Auto-hide toast
@@ -447,6 +548,9 @@ export default function App() {
     let allNewEntities = [...entities];
 
     for (const fileData of filesToProcess) {
+      // Yield to UI thread
+      await new Promise(resolve => setTimeout(resolve, 50));
+      
       try {
         setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, status: 'processing' } : f));
         
@@ -995,39 +1099,58 @@ export default function App() {
     const parts = entity.original.split(separator).map(p => p.trim()).filter(p => p.length > 0);
     if (parts.length < 2) return;
 
-    const affectedGroupId = entity.groupId;
+    setSplitResults(parts.map(p => ({
+      original: p,
+      type: entity.type,
+      id: Math.random().toString(36).substring(7)
+    })));
+  };
 
-    const newEntities = parts.map(part => {
-      const id = Math.random().toString(36).substring(7);
-      const pseudonym = getNextPseudonym(entity.type, entities);
-      return {
-        ...entity,
+  const confirmSplit = () => {
+    if (!editingEntity || !splitResults) return;
+
+    const affectedGroupId = editingEntity.groupId;
+    const newEntities: PIIEntity[] = [];
+    let currentEntities = [...entities].filter(e => e.id !== editingEntity.id);
+
+    // If the original entity was part of a group, we should probably break that group
+    if (affectedGroupId) {
+      currentEntities = currentEntities.map(e => e.groupId === affectedGroupId ? { ...e, groupId: undefined } : e);
+    }
+
+    splitResults.forEach(res => {
+      const id = `split-${editingEntity.id}-${Math.random().toString(36).substring(7)}`;
+      const pseudonym = getNextPseudonym(res.type, currentEntities);
+      const newEnt: PIIEntity = {
         id,
-        original: part,
+        original: res.original,
+        type: res.type,
         pseudonym,
-        groupId: undefined,
-        treated: false
+        enabled: true,
+        ignored: false,
+        treated: true,
+        fileIds: editingEntity.fileIds,
+        context: editingEntity.context,
+        groupId: `manual-group-${id}`
       };
+      newEntities.push(newEnt);
+      currentEntities.push(newEnt);
     });
 
-    setEntities(prev => {
-      let next = prev.filter(e => e.id !== entity.id);
-      
-      // If it was in a group, release all members of that group
-      if (affectedGroupId) {
-        next = next.map(e => e.groupId === affectedGroupId ? { ...e, groupId: undefined } : e);
-      }
-
-      next = [...next, ...newEntities];
-      
-      // Re-group
-      const grouped = groupSimilarEntities(next, isRelated);
-
-      setTimeout(() => pushToHistory(grouped, files), 0);
-      return grouped;
+    // Update global knowledge
+    const newKnowledge = { ...globalKnowledge };
+    newEntities.forEach(e => {
+      newKnowledge[e.original.toLowerCase().trim()] = e.type;
     });
+    setGlobalKnowledge(newKnowledge);
+
+    const finalEntities = groupSimilarEntities(currentEntities, isRelated);
+    setEntities(finalEntities);
+    pushToHistory(finalEntities, files);
+    
+    setSplitResults(null);
     setEditingEntity(null);
-    showToast(`${parts.length} novos elementos criados e grupos re-organizados.`, "success");
+    showToast(`${splitResults.length} novos elementos criados e validados.`, "success");
   };
 
   const handleFinishAmbiguityReview = () => {
@@ -1378,6 +1501,36 @@ export default function App() {
     showToast(`Mantido: "${keep}". Removido: "${remove}".`, "success");
   };
 
+  const handleResolveAllDuplicates = () => {
+    const toRemove = new Set<string>();
+    deduplicationSuggestions.forEach(s => {
+      // Keep item1, remove item2 by default
+      toRemove.add(s.item2);
+    });
+
+    setGlobalKnowledge(prev => {
+      const next = { ...prev };
+      toRemove.forEach(name => delete next[name]);
+      return next;
+    });
+
+    setDeduplicationSuggestions([]);
+    showToast(`${toRemove.size} sugestões de duplicação resolvidas automaticamente.`, "success");
+  };
+
+  const handleValidateAllEntities = () => {
+    setEntities(prev => {
+      const next = prev.map(e => {
+        if (e.enabled && !e.ignored && !e.treated) {
+          return { ...e, treated: true };
+        }
+        return e;
+      });
+      return next;
+    });
+    showToast("Todos os elementos foram validados.", "success");
+  };
+
   const handleDiscardSuggestion = (index: number) => {
     setDeduplicationSuggestions(prev => prev.filter((_, i) => i !== index));
     showToast("Sugestão descartada.", "info");
@@ -1437,9 +1590,6 @@ export default function App() {
     showToast("Sugestões de grupos aplicadas", "success");
   };
 
-  const [manualTerm, setManualTerm] = useState('');
-  const [showManualAddModal, setShowManualAddModal] = useState(false);
-
   const handleRescan = async () => {
     if (files.length === 0) return;
     setIsProcessing(true);
@@ -1452,37 +1602,71 @@ export default function App() {
         }
       });
 
-      const allNewEntities: PIIEntity[] = [];
+      const foundInScan: PIIEntity[] = [];
+      const foundIdsMap = new Map<string, PIIEntity>();
       
       for (const file of files) {
         const newEntities = scanText(file.content, file.id, entities, isRelated, sessionKnowledge, safelist);
-        allNewEntities.push(...newEntities);
+        
+        // Filter out new entities that are already in the entities list and treated/ignored
+        const filteredNew = newEntities.filter(ne => {
+          const existing = entities.find(e => e.original === ne.original && e.type === ne.type);
+          return !(existing && (existing.treated || existing.ignored));
+        });
+
+        filteredNew.forEach(ne => {
+          if (foundIdsMap.has(ne.id)) {
+            const existing = foundIdsMap.get(ne.id)!;
+            ne.fileIds?.forEach(fid => {
+              if (!existing.fileIds?.includes(fid)) {
+                existing.fileIds = [...(existing.fileIds || []), fid];
+              }
+            });
+          } else {
+            foundIdsMap.set(ne.id, ne);
+            foundInScan.push(ne);
+          }
+        });
       }
 
-      // 2. Group and update
-      const grouped = groupSimilarEntities(allNewEntities, isRelated);
+      // 2. Merge logic:
+      // Keep all entities from foundInScan
+      // AND any entities from the original list that were NOT found OR were already treated/ignored
+      const finalEntities = [...foundInScan];
+      
+      entities.forEach(existing => {
+        const isFound = foundIdsMap.has(existing.id);
+        const isTreatedOrIgnored = existing.treated || existing.ignored;
+        const isManual = existing.groupId?.startsWith('manual-group-');
+
+        if (isTreatedOrIgnored || isManual) {
+          // Always keep treated/ignored/manual work
+          // If it was also found in scan, we prefer the existing one because it has user validation state
+          if (isFound) {
+            const idx = finalEntities.findIndex(f => f.id === existing.id);
+            if (idx !== -1) finalEntities[idx] = existing;
+          } else {
+            finalEntities.push(existing);
+          }
+        } else if (!isFound) {
+          // If it wasn't found in scan and wasn't treated, we might still want to keep it if it was from a previous scan
+          // but the user said rescan is to show what hasn't been treated.
+          // Let's keep it to be safe, but mark as not treated.
+          finalEntities.push(existing);
+        }
+      });
+
+      // 3. Group and update
+      const grouped = groupSimilarEntities(finalEntities, isRelated);
       setEntities(grouped);
       pushToHistory(grouped, files);
-      showToast("Re-análise de consistência concluída.", "success");
+      showToast("Re-análise concluída. Novos elementos identificados.", "success");
     } catch (err) {
       console.error("Erro durante a re-análise:", err);
       showToast("Erro durante a re-análise.", "error");
     } finally {
       setIsProcessing(false);
     }
-  };
-
-  const handleAddManualTerm = () => {
-    const term = manualTerm.trim();
-    if (!term) return;
-    
-    setGlobalKnowledge(prev => ({ ...prev, [term]: 'NOME' }));
-    setManualTerm('');
-    setShowManualAddModal(false);
-    showToast(`"${term}" adicionado ao conhecimento. Re-analisando...`, "info");
-    
-    // Trigger rescan automatically
-    setTimeout(handleRescan, 500);
   };
 
   const handleExpandStart = () => {
@@ -1856,26 +2040,10 @@ export default function App() {
     showToast(`${exceptionsToMove.length} exceções transferidas para a Safelist.`, "success");
   };
 
-  const handleImportExceptions = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const imported = JSON.parse(e.target?.result as string);
-        setGlobalKnowledge(prev => ({ ...prev, ...imported }));
-      } catch (err) {
-        console.error("Erro ao importar conhecimento:", err);
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  // --- Export ---
-
   const handleExport = async () => {
     setIsProcessing(true);
     const zip = new JSZip();
+    const processedFiles: { name: string, data: Uint8Array | string, isPdf: boolean }[] = [];
     
     try {
       for (const fileData of files) {
@@ -1883,17 +2051,30 @@ export default function App() {
 
         if (fileData.type === 'application/pdf') {
           const pdfBytes = await exportAnonymizedPDFBytes(fileData);
+          processedFiles.push({ name: `anonymized_${fileData.name}`, data: pdfBytes, isPdf: true });
           zip.file(`anonymized_${fileData.name}`, pdfBytes);
         } else {
           const anonymizedText = anonymizeText(fileData.content, entities);
+          processedFiles.push({ name: `anonymized_${fileData.name}.txt`, data: anonymizedText, isPdf: false });
           zip.file(`anonymized_${fileData.name}.txt`, anonymizedText);
         }
       }
 
-      const content = await zip.generateAsync({ type: 'blob' });
-      saveAs(content, 'documentos_anonimizados.zip');
+      if (processedFiles.length === 1) {
+        const file = processedFiles[0];
+        const blob = new Blob([file.data], { type: file.isPdf ? 'application/pdf' : 'text/plain' });
+        saveAs(blob, file.name);
+        showToast("Documento exportado com sucesso.", "success");
+      } else if (processedFiles.length > 1) {
+        const content = await zip.generateAsync({ type: 'blob' });
+        saveAs(content, 'documentos_anonimizados.zip');
+        showToast(`${processedFiles.length} documentos exportados em ZIP.`, "success");
+      } else {
+        showToast("Nenhum documento pronto para exportar.", "error");
+      }
     } catch (error) {
       console.error("Erro ao exportar:", error);
+      showToast("Erro ao exportar documentos.", "error");
     } finally {
       setIsProcessing(false);
     }
@@ -1903,7 +2084,10 @@ export default function App() {
     const arrayBuffer = await fileData.rawFile.arrayBuffer();
     
     // Load with pdfjs for rendering
-    const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
+    const loadingTask = pdfjs.getDocument({ 
+      data: arrayBuffer,
+      standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/standard_fonts/`
+    });
     const pdf = await loadingTask.promise;
     
     // Create new PDF with pdf-lib
@@ -1927,9 +2111,13 @@ export default function App() {
       const viewport = page.getViewport({ scale });
       
       const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d', { alpha: false })!;
+      const context = canvas.getContext('2d')!;
       canvas.height = viewport.height;
       canvas.width = viewport.width;
+
+      // Fill with white background explicitly
+      context.fillStyle = 'white';
+      context.fillRect(0, 0, canvas.width, canvas.height);
 
       // Render original page to canvas
       await page.render({ 
@@ -1941,24 +2129,21 @@ export default function App() {
       // Get text content to find coordinates for redaction
       const textContent = await page.getTextContent();
       
-      // Draw redactions directly on the canvas (this physically overwrites the pixels)
+      // Draw redactions directly on the canvas
       for (const item of textContent.items as any[]) {
         const text = item.str;
         if (!text.trim() || text.trim().length < 2) continue;
 
-        // Find all entities that appear in this text item
         const matchesInItem = sortedEntities
           .filter(entity => text.includes(entity.original))
           .sort((a, b) => text.indexOf(a.original) - text.indexOf(b.original));
 
         if (matchesInItem.length > 0) {
-          // item.transform: [scaleX, skewY, skewX, scaleY, x, y]
           const [scaleX, , , scaleY, x, y] = item.transform;
           const pHeight = viewport.viewBox[3];
           const fontSize = Math.abs(scaleY);
           const charWidth = item.width / text.length;
 
-          // We need to handle multiple matches in the same string
           matchesInItem.forEach(matchingEntity => {
             const original = matchingEntity.original;
             const startIndex = text.indexOf(original);
@@ -1971,11 +2156,9 @@ export default function App() {
 
             const colorInfo = PII_COLORS[matchingEntity.type] || { hex: '#FFD700', textHex: '#000000' };
 
-            // Draw the redaction box (Solid color)
             context.fillStyle = colorInfo.hex;
             context.fillRect(cX, cY, cWidth, cHeight);
 
-            // Draw the pseudonym text
             if (original.length > 4 || original === matchingEntity.original) {
               context.fillStyle = colorInfo.textHex;
               const drawFontSize = Math.max(8, fontSize * 0.7 * scale);
@@ -1989,8 +2172,8 @@ export default function App() {
       }
 
       // Convert canvas to image and add to new PDF
-      const imageData = canvas.toDataURL('image/jpeg', 0.9);
-      const image = await outPdfDoc.embedJpg(imageData);
+      const imageData = canvas.toDataURL('image/png');
+      const image = await outPdfDoc.embedPng(imageData);
       
       const outPage = outPdfDoc.addPage([viewport.width / scale, viewport.height / scale]);
       outPage.drawImage(image, {
@@ -2096,172 +2279,295 @@ export default function App() {
             >
               <div className="p-6 border-b border-gray-100 flex items-center justify-between">
                 <h3 className="text-lg font-bold">Tratar Elemento</h3>
-                <button onClick={() => setEditingEntity(null)} className="p-2 hover:bg-gray-100 rounded-full">
+                <button 
+                  onClick={() => {
+                    setEditingEntity(null);
+                    setSplitResults(null);
+                  }} 
+                  className="p-2 hover:bg-gray-100 rounded-full"
+                >
                   <X className="w-5 h-5" />
                 </button>
               </div>
               
-              <div className="p-6 space-y-6">
-                <div>
-                  <label className="block text-sm font-medium text-gray-500 mb-2">Contexto no Documento</label>
-                  <div className="p-4 bg-gray-50 rounded-xl text-sm leading-relaxed whitespace-pre-wrap text-center">
-                    <div className="text-gray-400 opacity-40 text-xs mb-2 italic line-clamp-1">
-                      {editingEntity.contextBefore?.split(/\s+/).slice(0, -8).join(' ') || '...'}
+              <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
+                {!splitResults ? (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-500 mb-2">Contexto no Documento</label>
+                      <div className="p-4 bg-gray-50 rounded-xl text-sm leading-relaxed whitespace-pre-wrap text-center">
+                        <div className="text-gray-400 opacity-60 text-[10px] mb-2 italic">
+                          {editingEntity.contextBefore?.split(/\s+/).slice(-30, -15).join(' ') || '...'}
+                        </div>
+                        <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm inline-block max-w-full text-left">
+                          <span className="text-gray-400">{editingEntity.contextBefore?.split(/\s+/).slice(-15).join(' ')}</span>
+                          <span className="bg-yellow-200 px-1.5 py-0.5 rounded font-bold mx-1 text-gray-900 shadow-sm ring-2 ring-yellow-400/20">{editingEntity.original}</span>
+                          <span className="text-gray-400">{editingEntity.contextAfter?.split(/\s+/).slice(0, 15).join(' ')}</span>
+                        </div>
+                        <div className="text-gray-400 opacity-60 text-[10px] mt-2 italic">
+                          {editingEntity.contextAfter?.split(/\s+/).slice(15, 30).join(' ') || '...'}
+                        </div>
+                      </div>
                     </div>
-                    <div className="bg-white p-3 rounded-xl border border-gray-100 shadow-sm inline-block max-w-full">
-                      <span className="text-gray-500">{editingEntity.contextBefore?.split(/\s+/).slice(-8).join(' ')}</span>
-                      <span className="bg-yellow-200 px-1.5 py-0.5 rounded font-bold mx-1 text-gray-900 shadow-sm">{editingEntity.original}</span>
-                      <span className="text-gray-500">{editingEntity.contextAfter?.split(/\s+/).slice(0, 8).join(' ')}</span>
+
+                    <div className="grid grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-500 mb-2">Texto Original</label>
+                        <input 
+                          type="text" 
+                          value={editingEntity.original}
+                          onChange={(e) => handleUpdateEntity(editingEntity.id, { original: e.target.value })}
+                          className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-500 mb-2">Tipo</label>
+                        <select 
+                          value={editingEntity.type}
+                          onChange={(e) => handleUpdateEntity(editingEntity.id, { type: e.target.value })}
+                          className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                        >
+                          {Object.keys(PII_COLORS).map(type => (
+                            <option key={type} value={type}>{type}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-500 mb-2">Pseudónimo (Sigla)</label>
+                        <input 
+                          type="text" 
+                          value={editingEntity.pseudonym}
+                          onChange={(e) => handleUpdateEntity(editingEntity.id, { pseudonym: e.target.value })}
+                          className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                        />
+                      </div>
                     </div>
-                    <div className="text-gray-400 opacity-40 text-xs mt-2 italic line-clamp-1">
-                      {editingEntity.contextAfter?.split(/\s+/).slice(8).join(' ') || '...'}
+
+                    <div className="space-y-3">
+                      <label className="block text-sm font-medium text-gray-500">Ajustar Limites</label>
+                      <div className="flex flex-wrap gap-2">
+                        <button 
+                          onClick={handleExpandStart}
+                          className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs hover:bg-indigo-100 transition-colors"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>Expandir Início</span>
+                        </button>
+                        <button 
+                          onClick={handleShrinkStart}
+                          className="flex items-center gap-1 px-3 py-1.5 bg-gray-50 text-gray-700 rounded-lg text-xs hover:bg-gray-100 transition-colors"
+                        >
+                          <Scissors className="w-3 h-3" />
+                          <span>Reduzir Início</span>
+                        </button>
+                        <div className="w-px h-6 bg-gray-200 mx-1" />
+                        <button 
+                          onClick={handleShrinkEnd}
+                          className="flex items-center gap-1 px-3 py-1.5 bg-gray-50 text-gray-700 rounded-lg text-xs hover:bg-gray-100 transition-colors"
+                        >
+                          <Scissors className="w-3 h-3" />
+                          <span>Reduzir Fim</span>
+                        </button>
+                        <button 
+                          onClick={handleExpandEnd}
+                          className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs hover:bg-indigo-100 transition-colors"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>Expandir Fim</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <label className="block text-sm font-medium text-gray-500">Ações de Limpeza e Associação</label>
+                      <div className="flex flex-wrap gap-2">
+                        <button 
+                          onClick={() => {
+                            if (!editingEntity) return;
+                            // Remove single spaces between letters, e.g., "S i m õ e s" -> "Simões"
+                            let cleaned = editingEntity.original;
+                            for (let i = 0; i < 5; i++) {
+                              cleaned = cleaned.replace(/(\b\w)\s+(?=\w\b)/g, '$1');
+                            }
+                            cleaned = cleaned.replace(/\s+/g, ' ').trim();
+                            handleUpdateEntity(editingEntity.id, { original: cleaned });
+                            showToast("Espaços de OCR limpos.", "info");
+                          }}
+                          className="flex items-center gap-1 px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg text-xs hover:bg-amber-100 transition-colors border border-amber-200"
+                        >
+                          <Zap className="w-3 h-3" />
+                          <span>Limpar Espaços OCR</span>
+                        </button>
+                        <button 
+                          onClick={() => {
+                            if (!editingEntity) return;
+                            setShowMergeModal(true);
+                            setSelectedIds(new Set([editingEntity.id]));
+                          }}
+                          className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs hover:bg-indigo-100 transition-colors border border-indigo-200"
+                        >
+                          <Link className="w-3 h-3" />
+                          <span>Mesclar com outro...</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-sm font-medium text-gray-500">Ações de Divisão (Múltiplos Elementos)</label>
+                        <button 
+                          onClick={() => {
+                            if (!editingEntity) return;
+                            const fullContext = editingEntity.context?.text || editingEntity.original;
+                            handleUpdateEntity(editingEntity.id, { original: fullContext });
+                            showToast("Texto expandido para o contexto completo.", "info");
+                          }}
+                          className="text-[10px] font-bold text-indigo-600 hover:text-indigo-700 uppercase tracking-wider"
+                        >
+                          Usar Contexto Completo
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button 
+                          onClick={() => handleManualSplit(editingEntity, /\s+/)}
+                          className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-sm hover:bg-indigo-100 transition-colors border border-indigo-100"
+                        >
+                          Dividir por Espaço
+                        </button>
+                        <button 
+                          onClick={() => handleManualSplit(editingEntity, /\s+e\s+/i)}
+                          className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-sm hover:bg-indigo-100 transition-colors border border-indigo-100"
+                        >
+                          Dividir por " e "
+                        </button>
+                        <button 
+                          onClick={() => handleManualSplit(editingEntity, ',')}
+                          className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-sm hover:bg-indigo-100 transition-colors border border-indigo-100"
+                        >
+                          Dividir por Vírgula
+                        </button>
+                        <button 
+                          onClick={() => {
+                            if (!editingEntity) return;
+                            setSplitResults([
+                              { original: editingEntity.original, type: editingEntity.type, id: Math.random().toString(36).substring(7) }
+                            ]);
+                          }}
+                          className="px-3 py-1.5 bg-gray-50 text-gray-700 rounded-lg text-sm hover:bg-gray-100 transition-colors border border-gray-200"
+                        >
+                          Dividir Manualmente
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-gray-400 italic">
+                        Dica: Se o elemento contiver vários nomes (ex: "Nome1 e Nome2"), use "Dividir por ' e '".
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-100 mb-4">
+                      <p className="text-xs text-indigo-700 font-medium">
+                        O elemento foi dividido em {splitResults.length} partes. Classifique cada uma abaixo antes de confirmar.
+                      </p>
+                    </div>
+                    {splitResults.map((part, idx) => (
+                      <div key={part.id} className="flex gap-3 items-end p-3 bg-gray-50 rounded-xl border border-gray-100 group relative">
+                        <div className="flex-1">
+                          <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Texto {idx + 1}</label>
+                          <input 
+                            type="text" 
+                            value={part.original}
+                            onChange={(e) => {
+                              const next = [...splitResults];
+                              next[idx].original = e.target.value;
+                              setSplitResults(next);
+                            }}
+                            className="w-full px-3 py-1.5 text-sm border border-gray-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                          />
+                        </div>
+                        <div className="w-32">
+                          <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Tipo</label>
+                          <select 
+                            value={part.type}
+                            onChange={(e) => {
+                              const next = [...splitResults];
+                              next[idx].type = e.target.value;
+                              setSplitResults(next);
+                            }}
+                            className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                          >
+                            {Object.keys(PII_COLORS).map(type => (
+                              <option key={type} value={type}>{type}</option>
+                            ))}
+                          </select>
+                        </div>
+                        {splitResults.length > 1 && (
+                          <button 
+                            onClick={() => {
+                              setSplitResults(splitResults.filter((_, i) => i !== idx));
+                            }}
+                            className="p-2 text-red-400 hover:text-red-600 transition-colors"
+                            title="Remover esta parte"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    <div className="flex items-center justify-between pt-2">
+                      <button 
+                        onClick={() => setSplitResults(null)}
+                        className="text-xs text-indigo-600 font-bold hover:underline"
+                      >
+                        ← Cancelar divisão e voltar
+                      </button>
+                      <button 
+                        onClick={() => {
+                          if (!editingEntity) return;
+                          setSplitResults(prev => [
+                            ...(prev || []),
+                            { original: "", type: editingEntity.type, id: Math.random().toString(36).substring(7) }
+                          ]);
+                        }}
+                        className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-200 text-indigo-600 rounded-lg text-xs font-bold hover:bg-indigo-50 transition-colors shadow-sm uppercase tracking-wider"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Adicionar Parte</span>
+                      </button>
                     </div>
                   </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-500 mb-2">Texto Original</label>
-                    <input 
-                      type="text" 
-                      value={editingEntity.original}
-                      onChange={(e) => handleUpdateEntity(editingEntity.id, { original: e.target.value })}
-                      className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-500 mb-2">Tipo</label>
-                    <select 
-                      value={editingEntity.type}
-                      onChange={(e) => handleUpdateEntity(editingEntity.id, { type: e.target.value })}
-                      className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                    >
-                      {Object.keys(PII_COLORS).map(type => (
-                        <option key={type} value={type}>{type}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-500 mb-2">Pseudónimo (Sigla)</label>
-                    <input 
-                      type="text" 
-                      value={editingEntity.pseudonym}
-                      onChange={(e) => handleUpdateEntity(editingEntity.id, { pseudonym: e.target.value })}
-                      className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <label className="block text-sm font-medium text-gray-500">Ajustar Limites</label>
-                  <div className="flex flex-wrap gap-2">
-                    <button 
-                      onClick={handleExpandStart}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs hover:bg-indigo-100 transition-colors"
-                    >
-                      <Plus className="w-3 h-3" />
-                      <span>Expandir Início</span>
-                    </button>
-                    <button 
-                      onClick={handleShrinkStart}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-gray-50 text-gray-700 rounded-lg text-xs hover:bg-gray-100 transition-colors"
-                    >
-                      <Scissors className="w-3 h-3" />
-                      <span>Reduzir Início</span>
-                    </button>
-                    <div className="w-px h-6 bg-gray-200 mx-1" />
-                    <button 
-                      onClick={handleShrinkEnd}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-gray-50 text-gray-700 rounded-lg text-xs hover:bg-gray-100 transition-colors"
-                    >
-                      <Scissors className="w-3 h-3" />
-                      <span>Reduzir Fim</span>
-                    </button>
-                    <button 
-                      onClick={handleExpandEnd}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs hover:bg-indigo-100 transition-colors"
-                    >
-                      <Plus className="w-3 h-3" />
-                      <span>Expandir Fim</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <label className="block text-sm font-medium text-gray-500">Ações de Limpeza e Associação</label>
-                  <div className="flex flex-wrap gap-2">
-                    <button 
-                      onClick={() => {
-                        if (!editingEntity) return;
-                        // Remove single spaces between letters, e.g., "S i m õ e s" -> "Simões"
-                        let cleaned = editingEntity.original;
-                        for (let i = 0; i < 5; i++) {
-                          cleaned = cleaned.replace(/(\b\w)\s+(?=\w\b)/g, '$1');
-                        }
-                        cleaned = cleaned.replace(/\s+/g, ' ').trim();
-                        handleUpdateEntity(editingEntity.id, { original: cleaned });
-                        showToast("Espaços de OCR limpos.", "info");
-                      }}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg text-xs hover:bg-amber-100 transition-colors border border-amber-200"
-                    >
-                      <Zap className="w-3 h-3" />
-                      <span>Limpar Espaços OCR</span>
-                    </button>
-                    <button 
-                      onClick={() => {
-                        if (!editingEntity) return;
-                        setShowMergeModal(true);
-                        setSelectedIds(new Set([editingEntity.id]));
-                      }}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs hover:bg-indigo-100 transition-colors border border-indigo-200"
-                    >
-                      <Link className="w-3 h-3" />
-                      <span>Mesclar com outro...</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <label className="block text-sm font-medium text-gray-500">Ações de Divisão</label>
-                  <div className="flex flex-wrap gap-2">
-                    <button 
-                      onClick={() => handleManualSplit(editingEntity, /\s+/)}
-                      className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-sm hover:bg-indigo-100 transition-colors"
-                    >
-                      Dividir por Espaço
-                    </button>
-                    <button 
-                      onClick={() => handleManualSplit(editingEntity, /\s+e\s+/i)}
-                      className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-sm hover:bg-indigo-100 transition-colors"
-                    >
-                      Dividir por "e"
-                    </button>
-                    <button 
-                      onClick={() => handleManualSplit(editingEntity, ',')}
-                      className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-sm hover:bg-indigo-100 transition-colors"
-                    >
-                      Dividir por Vírgula
-                    </button>
-                  </div>
-                </div>
+                )}
               </div>
 
               <div className="p-6 bg-gray-50 flex justify-end gap-3">
                 <button 
-                  onClick={() => setEditingEntity(null)}
+                  onClick={() => {
+                    setEditingEntity(null);
+                    setSplitResults(null);
+                  }}
                   className="px-6 py-2 text-gray-600 font-medium hover:bg-gray-200 rounded-lg transition-colors"
                 >
                   Fechar
                 </button>
-                <button 
-                  onClick={() => {
-                    handleUpdateEntity(editingEntity.id, { treated: true });
-                    setEditingEntity(null);
-                  }}
-                  className="px-6 py-2 bg-indigo-600 text-white font-medium hover:bg-indigo-700 rounded-lg transition-colors"
-                >
-                  Validar e Sair
-                </button>
+                {splitResults ? (
+                  <button 
+                    onClick={confirmSplit}
+                    disabled={splitResults.length === 0}
+                    className="px-6 py-2 bg-indigo-600 text-white font-medium hover:bg-indigo-700 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    Confirmar Divisão e Validar
+                  </button>
+                ) : (
+                  <button 
+                    onClick={() => {
+                      handleUpdateEntity(editingEntity.id, { treated: true });
+                      setEditingEntity(null);
+                    }}
+                    className="px-6 py-2 bg-indigo-600 text-white font-medium hover:bg-indigo-700 rounded-lg transition-colors"
+                  >
+                    Validar e Sair
+                  </button>
+                )}
               </div>
             </motion.div>
           </div>
@@ -2506,15 +2812,100 @@ export default function App() {
                     <div 
                       ref={leftScrollRef}
                       onScroll={() => handleSyncScroll('left')}
-                      className="flex-1 p-6 overflow-y-auto font-mono text-sm whitespace-pre-wrap text-gray-600 bg-white"
+                      onMouseUp={(e) => {
+                        const selection = window.getSelection();
+                        const text = selection?.toString().trim();
+                        if (text && text.length > 1) {
+                          setPendingManualTerm({
+                            text,
+                            x: e.clientX,
+                            y: e.clientY
+                          });
+                        }
+                      }}
+                      className="flex-1 p-6 overflow-y-auto font-mono text-sm whitespace-pre-wrap text-gray-600 bg-white relative"
                     >
                       {selectedFileId ? (
-                        <HighlightText 
-                          text={files.find(f => f.id === selectedFileId)?.content || ""} 
-                          entities={entities} 
-                          mode="original" 
-                        />
-                      ) : "Selecione um ficheiro para visualizar"}
+                <HighlightText 
+                  text={files.find(f => f.id === selectedFileId)?.content || ""} 
+                  entities={entities} 
+                  mode="original" 
+                  globalKnowledge={globalKnowledge}
+                  safelist={safelist}
+                />
+              ) : "Selecione um ficheiro para visualizar"}
+
+              {/* Navigation Arrows for Untreated Elements */}
+              {selectedFileId && (
+                <div className="fixed bottom-8 right-1/2 translate-x-[-20px] flex flex-col gap-2 z-50">
+                  <button 
+                    onClick={() => navigateUntreated('prev')}
+                    className="p-3 bg-white shadow-lg border border-gray-200 rounded-full text-gray-600 hover:bg-gray-50 hover:text-indigo-600 transition-all"
+                    title="Anterior elemento não tratado"
+                  >
+                    <ChevronUp className="w-5 h-5" />
+                  </button>
+                  <button 
+                    onClick={() => navigateUntreated('next')}
+                    className="p-3 bg-white shadow-lg border border-gray-200 rounded-full text-gray-600 hover:bg-gray-50 hover:text-indigo-600 transition-all"
+                    title="Próximo elemento não tratado"
+                  >
+                    <ChevronDown className="w-5 h-5" />
+                  </button>
+                </div>
+              )}
+
+              {pendingManualTerm && (
+                        <div 
+                          className="fixed z-[60] bg-white shadow-2xl border border-gray-200 rounded-xl p-3 flex flex-col gap-2 animate-in fade-in zoom-in duration-200 min-w-[220px]"
+                          style={{ left: Math.min(window.innerWidth - 240, pendingManualTerm.x), top: pendingManualTerm.y + 15 }}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Adicionar como:</span>
+                              <span className="text-[9px] text-indigo-500 font-medium truncate max-w-[150px]">"{pendingManualTerm.text}"</span>
+                            </div>
+                            <button onClick={() => setPendingManualTerm(null)} className="p-1 hover:bg-gray-100 rounded-full">
+                              <X className="w-3 h-3 text-gray-400" />
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5 max-h-[200px] overflow-y-auto pr-1">
+                            {Object.entries(PII_COLORS).map(([type, color]) => (
+                              <button 
+                                key={type}
+                                onClick={() => {
+                                  setGlobalKnowledge(prev => ({ ...prev, [pendingManualTerm.text.toLowerCase().trim()]: type }));
+                                  setPendingManualTerm(null);
+                                  showToast(`"${pendingManualTerm.text}" adicionado como ${type}. Re-analise para aplicar.`, "success");
+                                }}
+                                className="px-2 py-1.5 text-[10px] font-bold rounded transition-all hover:scale-105 text-center shadow-sm border border-black/5"
+                                style={{ backgroundColor: color.hex, color: color.textHex }}
+                              >
+                                {type}
+                              </button>
+                            ))}
+                            <button 
+                              onClick={() => {
+                                setGlobalKnowledge(prev => ({ ...prev, [pendingManualTerm.text.toLowerCase().trim()]: 'EXCECAO' }));
+                                setPendingManualTerm(null);
+                                showToast(`"${pendingManualTerm.text}" adicionado às EXCEÇÕES.`, "success");
+                              }}
+                              className="col-span-2 px-2 py-1.5 bg-gray-100 text-gray-600 text-[10px] font-bold rounded hover:bg-gray-200 transition-all text-center border border-gray-200 mt-1"
+                            >
+                              EXCEÇÃO GLOBAL
+                            </button>
+                          </div>
+                          <button 
+                            onClick={() => {
+                              window.getSelection()?.removeAllRanges();
+                              setPendingManualTerm(null);
+                            }}
+                            className="text-[9px] text-gray-400 hover:text-gray-600 text-center mt-1"
+                          >
+                            Limpar Seleção
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                   
@@ -2560,12 +2951,12 @@ export default function App() {
                   </button>
                 </div>
                 <button 
-                  onClick={() => setShowManualAddModal(true)}
-                  className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-xl text-sm font-bold hover:bg-gray-50 transition-all shadow-sm"
-                  title="Adicionar termo manualmente para anonimização"
+                  onClick={handleValidateAllEntities}
+                  className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-xl text-sm font-bold hover:bg-green-700 transition-all shadow-sm"
+                  title="Validar todos os elementos detetados de uma vez"
                 >
-                  <Plus className="w-4 h-4 text-indigo-600" />
-                  <span>Adicionar Termo</span>
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Validar Tudo</span>
                 </button>
                 <button 
                   onClick={handleSplitAllAndEntities}
@@ -2576,12 +2967,12 @@ export default function App() {
                   <span>Dividir 'e'</span>
                 </button>
                 <button 
-                  onClick={reclassifyEntities}
+                  onClick={handleRescan}
                   className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-sm font-bold hover:bg-emerald-100 transition-colors"
-                  title="Reclassificar nomes como Juízes ou Autores com base no conhecimento global"
+                  title="Re-analisar todos os documentos com base no conhecimento global atual"
                 >
-                  <Zap className="w-4 h-4" />
-                  <span>Reclassificar (Global)</span>
+                  <RotateCw className="w-4 h-4" />
+                  <span>Re-analisar Documentos</span>
                 </button>
                 <button 
                   onClick={handleSuggestGroups}
@@ -3225,7 +3616,8 @@ export default function App() {
                     <a href="#editor" className="hover:underline flex items-center gap-2"><span>5.</span> Edição de Detalhe (O Bisturi)</a>
                     <a href="#conhecimento" className="hover:underline flex items-center gap-2"><span>6.</span> Conhecimento Global</a>
                     <a href="#exportacao" className="hover:underline flex items-center gap-2"><span>7.</span> Exportação e Resultados</a>
-                    <a href="#dicas" className="hover:underline flex items-center gap-2"><span>8.</span> Dicas de Especialista</a>
+                    <a href="#botoes" className="hover:underline flex items-center gap-2"><span>8.</span> Guia de Botões e Funções</a>
+                    <a href="#dicas" className="hover:underline flex items-center gap-2"><span>9.</span> Dicas de Especialista</a>
                   </div>
                 </section>
 
@@ -3625,6 +4017,70 @@ export default function App() {
                   </div>
                 </section>
 
+                {/* Step 8: Management Buttons */}
+                <section id="botoes" className="space-y-8">
+                  <div className="flex items-center gap-4 text-indigo-600 border-b-2 border-indigo-100 pb-4">
+                    <Zap className="w-10 h-10" />
+                    <h3 className="text-3xl font-extrabold tracking-tight">Guia de Funcionalidades e Botões</h3>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="p-6 bg-white border border-gray-200 rounded-3xl shadow-sm space-y-4">
+                      <div className="flex items-center gap-3 text-green-600">
+                        <CheckCircle2 className="w-6 h-6" />
+                        <h4 className="font-bold text-lg">Validar Tudo</h4>
+                      </div>
+                      <p className="text-sm text-gray-600"><strong>O que faz:</strong> Marca todos os elementos da lista atual como "Validados" de uma só vez. Útil quando já revisou visualmente a lista e concorda com as deteções.</p>
+                      <p className="text-xs text-gray-500 bg-gray-50 p-3 rounded-xl italic"><strong>Efeito no trabalho:</strong> Altera o estado de "Tratado" para verdadeiro em todos os itens. Não altera nomes, tipos ou pseudónimos.</p>
+                    </div>
+
+                    <div className="p-6 bg-white border border-gray-200 rounded-3xl shadow-sm space-y-4">
+                      <div className="flex items-center gap-3 text-blue-600">
+                        <Scissors className="w-6 h-6" />
+                        <h4 className="font-bold text-lg">Dividir 'e'</h4>
+                      </div>
+                      <p className="text-sm text-gray-600"><strong>O que faz:</strong> Procura em toda a lista nomes que contenham a conjunção " e " (ex: "João e Maria") e separa-os em dois registos diferentes.</p>
+                      <p className="text-xs text-gray-500 bg-gray-50 p-3 rounded-xl italic"><strong>Efeito no trabalho:</strong> Cria novos elementos na lista. Pode alterar o agrupamento se os novos nomes forem semelhantes a outros já existentes.</p>
+                    </div>
+
+                    <div className="p-6 bg-white border border-gray-200 rounded-3xl shadow-sm space-y-4">
+                      <div className="flex items-center gap-3 text-emerald-600">
+                        <RotateCw className="w-6 h-6" />
+                        <h4 className="font-bold text-lg">Re-analisar Documentos</h4>
+                      </div>
+                      <p className="text-sm text-gray-600"><strong>O que faz:</strong> Executa uma nova varredura em todos os ficheiros abertos. Utiliza o "Conhecimento Global" (Juízes, Autores e Exceções) para encontrar novos termos ou corrigir tipos.</p>
+                      <p className="text-xs text-gray-500 bg-gray-50 p-3 rounded-xl italic"><strong>Efeito no trabalho:</strong> <u>Não altera elementos que já foram validados ou ignorados</u> pelo utilizador. Apenas adiciona novas deteções ou atualiza elementos que ainda não foram mexidos.</p>
+                    </div>
+
+                    <div className="p-6 bg-white border border-gray-200 rounded-3xl shadow-sm space-y-4">
+                      <div className="flex items-center gap-3 text-amber-600">
+                        <Plus className="w-6 h-6" />
+                        <h4 className="font-bold text-lg">Sugerir Grupos</h4>
+                      </div>
+                      <p className="text-sm text-gray-600"><strong>O que faz:</strong> Abre uma janela com sugestões de nomes muito parecidos que o sistema acha que são a mesma pessoa, mas que ainda estão com pseudónimos diferentes (ex: "Maria Silva" e "Maria S. Silva").</p>
+                      <p className="text-xs text-gray-500 bg-gray-50 p-3 rounded-xl italic"><strong>Efeito no trabalho:</strong> Não altera nada automaticamente. O utilizador decide, caso a caso, se aceita ou rejeita a sugestão apresentada.</p>
+                    </div>
+
+                    <div className="p-6 bg-white border border-gray-200 rounded-3xl shadow-sm space-y-4">
+                      <div className="flex items-center gap-3 text-indigo-600">
+                        <RotateCw className="w-6 h-6" />
+                        <h4 className="font-bold text-lg">Re-agrupar</h4>
+                      </div>
+                      <p className="text-sm text-gray-600"><strong>O que faz:</strong> Re-executa o algoritmo de similaridade para garantir que todos os nomes que devem estar juntos partilham o mesmo pseudónimo.</p>
+                      <p className="text-xs text-gray-500 bg-gray-50 p-3 rounded-xl italic"><strong>Efeito no trabalho:</strong> Pode alterar Pseudónimos e Grupos de entidades <u>não validadas</u> se o algoritmo detetar que elas pertencem a um grupo diferente. Mantém grupos manuais intactos.</p>
+                    </div>
+
+                    <div className="p-6 bg-white border border-gray-200 rounded-3xl shadow-sm space-y-4">
+                      <div className="flex items-center gap-3 text-red-600">
+                        <Trash2 className="w-6 h-6" />
+                        <h4 className="font-bold text-lg">Limpar Tudo</h4>
+                      </div>
+                      <p className="text-sm text-gray-600"><strong>O que faz:</strong> Apaga todos os documentos e todas as entidades detetadas, reiniciando a sessão.</p>
+                      <p className="text-xs text-gray-500 bg-gray-50 p-3 rounded-xl italic"><strong>Efeito no trabalho:</strong> Perda total do trabalho da sessão atual (exceto o Conhecimento Global).</p>
+                    </div>
+                  </div>
+                </section>
+
                 {/* Final Tips */}
                 <section id="dicas" className="p-10 bg-gray-900 rounded-[40px] text-white">
                   <div className="flex items-center gap-3 mb-8">
@@ -3692,7 +4148,7 @@ export default function App() {
               <div className="p-6 overflow-y-auto flex-1 space-y-4">
                 {ambiguousEntities.filter(e => 
                   (e.type === 'NOME' || e.type === 'AUTOR' || e.type === 'JUIZ') && 
-                  (e.original.includes(' e ') || e.original.includes(',') || e.original.includes('  '))
+                  (e.original.includes(' e ') || e.original.includes(','))
                 ).length === 0 ? (
                   <div className="text-center py-12">
                     <CheckCircle2 className="w-16 h-16 text-green-500 mx-auto mb-4" />
@@ -3709,7 +4165,7 @@ export default function App() {
                     {ambiguousEntities
                       .filter(e => 
                         (e.type === 'NOME' || e.type === 'AUTOR' || e.type === 'JUIZ') && 
-                        (e.original.includes(' e ') || e.original.includes(',') || e.original.includes('  '))
+                        (e.original.includes(' e ') || e.original.includes(','))
                       )
                       .map((entity) => (
                         <div key={entity.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-200 group hover:border-indigo-200 transition-all">
@@ -3740,15 +4196,6 @@ export default function App() {
                               >
                                 <Unlink className="w-4 h-4" />
                                 Dividir por ","
-                              </button>
-                            )}
-                            {entity.original.includes('  ') && (
-                              <button 
-                                onClick={() => handleSplitAmbiguous(entity.id, 'space')}
-                                className="flex items-center gap-2 px-3 py-2 bg-white border border-indigo-100 text-indigo-600 rounded-xl text-sm font-bold hover:bg-indigo-50 transition-all"
-                              >
-                                <Type className="w-4 h-4" />
-                                Dividir por Espaço
                               </button>
                             )}
                             
@@ -3847,7 +4294,18 @@ export default function App() {
                   ))
                 )}
               </div>
-              <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end">
+              <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  {deduplicationSuggestions.length > 0 && (
+                    <button 
+                      onClick={handleResolveAllDuplicates}
+                      className="px-4 py-2 bg-amber-100 text-amber-700 rounded-xl text-sm font-bold hover:bg-amber-200 transition-all flex items-center gap-2"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      Validar Todas as Sugestões
+                    </button>
+                  )}
+                </div>
                 <button 
                   onClick={() => setShowDeduplicationModal(false)}
                   className="px-6 py-2 bg-white border border-gray-200 rounded-xl font-bold hover:bg-gray-100 transition-all"
@@ -4250,74 +4708,6 @@ export default function App() {
                     )}
                   </>
                 )}
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-      {/* Manual Add Modal */}
-      <AnimatePresence>
-        {showManualAddModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden"
-            >
-              <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-indigo-50/50">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-indigo-600 rounded-lg text-white">
-                    <Plus className="w-5 h-5" />
-                  </div>
-                  <h2 className="text-lg font-bold text-gray-900">Adicionar Termo Manual</h2>
-                </div>
-                <button onClick={() => setShowManualAddModal(false)} className="p-2 hover:bg-gray-200 rounded-full transition-colors">
-                  <X className="w-5 h-5 text-gray-500" />
-                </button>
-              </div>
-              
-              <div className="p-6 space-y-4">
-                <p className="text-sm text-gray-600">
-                  Insira um nome, morada ou termo que a aplicação não detetou automaticamente. 
-                  Este termo será adicionado ao conhecimento global e uma re-análise será iniciada.
-                </p>
-                
-                <div>
-                  <label className="block text-xs font-bold text-gray-400 uppercase mb-2 tracking-wider">Termo a Anonimizar</label>
-                  <input 
-                    type="text" 
-                    value={manualTerm}
-                    onChange={(e) => setManualTerm(e.target.value)}
-                    placeholder="Ex: Maria Alice Gomes..."
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                    autoFocus
-                    onKeyDown={(e) => e.key === 'Enter' && handleAddManualTerm()}
-                  />
-                </div>
-
-                <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 flex gap-3">
-                  <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
-                  <p className="text-xs text-amber-800 leading-relaxed">
-                    <strong>Dica:</strong> Após adicionar, a aplicação irá procurar este termo exato em todos os documentos e sugerir a sua anonimização.
-                  </p>
-                </div>
-              </div>
-              
-              <div className="p-6 bg-gray-50 flex gap-3">
-                <button 
-                  onClick={() => setShowManualAddModal(false)}
-                  className="flex-1 px-4 py-2 text-gray-600 font-bold hover:bg-gray-200 rounded-xl transition-colors"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  onClick={handleAddManualTerm}
-                  disabled={!manualTerm.trim()}
-                  className="flex-1 px-4 py-2 bg-indigo-600 text-white font-bold hover:bg-indigo-700 rounded-xl transition-colors disabled:opacity-50"
-                >
-                  Adicionar e Analisar
-                </button>
               </div>
             </motion.div>
           </div>
