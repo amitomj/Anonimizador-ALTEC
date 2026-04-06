@@ -113,14 +113,14 @@ const PII_PATTERNS = {
   AUTOR: /\bAutor(?:\(a\))?\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
   ADVOGADO: /\b(?:Advogado|Advogada|Mandatário|Mandatária)\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
   // More aggressive name patterns for Portuguese - updated to handle internal spaces like "F erreira"
-  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Réu|Mandatário|Advogado|Advogada|Recorrente|Recorrido)\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))+)/g,
+  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Autora|Réu|Ré|Mandatário|Advogado|Advogada|Recorrente|Recorrido)(?:,\s*|\s+)([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))+)/g,
   NOME_CAPS: /\b([A-ZÀ-Ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e|DE|DA|DO|DOS|DAS|E)\s+[A-ZÀ-Ÿ]{2,}|\s+[A-ZÀ-Ÿ]{2,}){1,8})\b/g,
   // Generic sequence of capitalized words (2 or more) - updated to handle internal spaces
   NOME_GENERIC: /\b([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){1,8})\b/g,
   // Pattern for names with "e" in the middle (often two people)
   NOME_AND: /\b([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*\s+e\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)\b/g,
   // Legal context patterns
-  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à|recorrente|recorrido)\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){1,8})/g,
+  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à|recorrente|recorrido)(?:,\s*|\s+)([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){1,8})/g,
 };
 
 const NAME_TITLES = [
@@ -378,9 +378,16 @@ export function scanText(
 
     // Caso especial: Se for um nome composto (ex: "I. Pelos"), verificar se a parte principal é exceção
     if (snorm.length > 3) {
-      const parts = matchText.split(/[\s.]+/).filter(p => p.length > 2);
+      const parts = matchText.split(/[\s,.]+/).filter(p => p.length > 2);
+      
+      // Lista de títulos normalizados para ignorar na verificação de exceção
+      const normalizedTitles = NAME_TITLES.map(t => superNormalize(t.replace('\\.', '.')));
+      
       for (const part of parts) {
         const sp = superNormalize(part);
+        // Se a parte for um título (como "Autora"), não a usamos para invalidar o match
+        if (normalizedTitles.includes(sp)) continue;
+        
         if (superNormalizedExceptions.has(sp)) return true;
       }
     }
@@ -438,8 +445,8 @@ export function scanText(
 
   // 2. Portuguese Legal Patterns (Parties)
   const legalPatterns = [
-    /(?:Recorrente|Recorrido|Requerente|Requerido|Réu|Participante|Denunciado|Arguido|Assistente|Beneficiário|Executado|Exequente|Oponente|Reclamante|Reclamado|Interveniente|Contrainteressado|Apelante|Apelado|Agravante|Agravado|Embargante|Embargado|Demandante|Demandado|Advogado|Advogada|Mandatário|Mandatária):\s*([^,.;\n]+)/gi,
-    /(?:Nome|Apelido|Filiação|Naturalidade|Residência|Sede):\s*([^,.;\n]+)/gi,
+    /(?:Recorrente|Recorrido|Requerente|Requerido|Réu|Ré|Autor|Autora|Participante|Denunciado|Arguido|Assistente|Beneficiário|Executado|Exequente|Oponente|Reclamante|Reclamado|Interveniente|Contrainteressado|Apelante|Apelado|Agravante|Agravado|Embargante|Embargado|Demandante|Demandado|Advogado|Advogada|Mandatário|Mandatária)(?::|,\s*|\s+)\s*([^,.;\n]+)/gi,
+    /(?:Nome|Apelido|Filiação|Naturalidade|Residência|Sede)(?::|,\s*|\s+)\s*([^,.;\n]+)/gi,
   ];
 
   legalPatterns.forEach(pattern => {
