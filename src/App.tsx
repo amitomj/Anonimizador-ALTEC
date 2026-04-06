@@ -28,6 +28,22 @@ import {
   Safelist
 } from './lib/anonymizer';
 
+const ORDERED_PII_TYPES = (() => {
+  const types = Object.keys(PII_COLORS);
+  const priority = ['NOME', 'ADVOGADO', 'JUIZ', 'AUTOR'];
+  
+  return types.sort((a, b) => {
+    const aIdx = priority.indexOf(a);
+    const bIdx = priority.indexOf(b);
+    
+    if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+    if (aIdx !== -1) return -1;
+    if (bIdx !== -1) return 1;
+    
+    return a.localeCompare(b);
+  });
+})();
+
 // Set up PDF.js worker
 // @ts-ignore
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -736,6 +752,19 @@ export default function App() {
       });
     }
     setSelectedIds(new Set());
+  };
+
+  const handleAddSelectedToExceptions = () => {
+    const selectedEntities = entities.filter(e => selectedIds.has(e.id));
+    const newKnowledge = { ...globalKnowledge };
+    
+    selectedEntities.forEach(e => {
+      newKnowledge[e.original.toLowerCase().trim()] = 'EXCECAO';
+    });
+    
+    setGlobalKnowledge(newKnowledge);
+    handleIgnoreSelected();
+    showToast(`${selectedEntities.length} termos adicionados às EXCEÇÕES GLOBAIS.`, "success");
   };
 
   const handleGroupSelected = () => {
@@ -2327,7 +2356,7 @@ export default function App() {
                           onChange={(e) => handleUpdateEntity(editingEntity.id, { type: e.target.value })}
                           className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
                         >
-                          {Object.keys(PII_COLORS).map(type => (
+                          {ORDERED_PII_TYPES.map(type => (
                             <option key={type} value={type}>{type}</option>
                           ))}
                         </select>
@@ -2496,7 +2525,7 @@ export default function App() {
                             }}
                             className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
                           >
-                            {Object.keys(PII_COLORS).map(type => (
+                            {ORDERED_PII_TYPES.map(type => (
                               <option key={type} value={type}>{type}</option>
                             ))}
                           </select>
@@ -2779,7 +2808,7 @@ export default function App() {
                 <div className="space-y-1">
                   <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wider">Algo escapou?</h4>
                   <p className="text-xs text-amber-800 leading-relaxed">
-                    Se a aplicação não detetou um nome, use o botão <strong>"Adicionar Termo"</strong> na lista de elementos ou o botão <strong>"Re-analisar"</strong> no topo para uma varredura de consistência.
+                    Se a aplicação não detetou um nome, <strong>selecione o texto diretamente no documento original</strong> à esquerda ou use o botão <strong>"Re-analisar"</strong> no topo para uma varredura de consistência.
                   </p>
                 </div>
               </div>
@@ -2870,20 +2899,36 @@ export default function App() {
                             </button>
                           </div>
                           <div className="grid grid-cols-2 gap-1.5 max-h-[200px] overflow-y-auto pr-1">
-                            {Object.entries(PII_COLORS).map(([type, color]) => (
-                              <button 
-                                key={type}
-                                onClick={() => {
-                                  setGlobalKnowledge(prev => ({ ...prev, [pendingManualTerm.text.toLowerCase().trim()]: type }));
-                                  setPendingManualTerm(null);
-                                  showToast(`"${pendingManualTerm.text}" adicionado como ${type}. Re-analise para aplicar.`, "success");
-                                }}
-                                className="px-2 py-1.5 text-[10px] font-bold rounded transition-all hover:scale-105 text-center shadow-sm border border-black/5"
-                                style={{ backgroundColor: color.hex, color: color.textHex }}
-                              >
-                                {type}
-                              </button>
-                            ))}
+                            {ORDERED_PII_TYPES.map(type => {
+                              const color = PII_COLORS[type];
+                              return (
+                                <button 
+                                  key={type}
+                                  onClick={() => {
+                                    setGlobalKnowledge(prev => ({ ...prev, [pendingManualTerm.text.toLowerCase().trim()]: type }));
+                                    
+                                    // Also add to current entities as a treated entity
+                                    const newEntity: PIIEntity = {
+                                      id: `manual-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+                                      original: pendingManualTerm.text,
+                                      type: type,
+                                      pseudonym: getNextPseudonym(type, entities),
+                                      enabled: true,
+                                      treated: true,
+                                      fileIds: [selectedFileId || 'manual']
+                                    };
+                                    setEntities(prev => [...prev, newEntity]);
+                                    
+                                    setPendingManualTerm(null);
+                                    showToast(`"${pendingManualTerm.text}" adicionado como ${type} e VALIDADO.`, "success");
+                                  }}
+                                  className="px-2 py-1.5 text-[10px] font-bold rounded transition-all hover:scale-105 text-center shadow-sm border border-black/5"
+                                  style={{ backgroundColor: color.hex, color: color.textHex }}
+                                >
+                                  {type}
+                                </button>
+                              );
+                            })}
                             <button 
                               onClick={() => {
                                 setGlobalKnowledge(prev => ({ ...prev, [pendingManualTerm.text.toLowerCase().trim()]: 'EXCECAO' }));
@@ -3004,7 +3049,7 @@ export default function App() {
                 </button>
               </div>
               <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
-                {['ALL', ...Object.keys(PII_COLORS)].map(type => (
+                {['ALL', ...ORDERED_PII_TYPES].map(type => (
                   <button
                     key={type}
                     onClick={() => setFilterType(type)}
@@ -3041,7 +3086,7 @@ export default function App() {
                       }}
                     >
                       <option value="" disabled>Selecionar...</option>
-                      {Object.keys(PII_COLORS).map(type => (
+                      {ORDERED_PII_TYPES.map(type => (
                         <option key={type} value={type}>{type}</option>
                       ))}
                     </select>
@@ -3259,7 +3304,7 @@ export default function App() {
                           {group.some(e => e.type !== group[0].type) && (
                             <option value="MIXED" disabled>VÁRIOS</option>
                           )}
-                          {Object.keys(PII_COLORS).map(type => (
+                          {ORDERED_PII_TYPES.map(type => (
                             <option key={type} value={type}>{type}</option>
                           ))}
                         </select>
@@ -3448,6 +3493,14 @@ export default function App() {
               >
                 <Layers className="w-4 h-4" />
                 <span>Agrupar</span>
+              </button>
+              <button 
+                onClick={handleAddSelectedToExceptions}
+                className="flex items-center gap-2 bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-lg shadow-amber-200"
+                title="Adicionar à Safelist e ignorar em todos os documentos"
+              >
+                <Shield className="w-4 h-4" />
+                <span>Exceção</span>
               </button>
               {copiedPseudonym && (
                 <button 
@@ -4136,13 +4189,23 @@ export default function App() {
                     <p className="text-sm text-amber-700">Detetámos nomes que podem ser listas de várias pessoas. Por favor, verifique antes de prosseguir.</p>
                   </div>
                 </div>
-                <button 
-                  onClick={handleFinishAmbiguityReview}
-                  className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 flex items-center gap-2"
-                >
-                  <Check className="w-4 h-4" />
-                  Concluir e Agrupar
-                </button>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={undo}
+                    disabled={historyIndex <= 0}
+                    className="p-2.5 bg-white border border-gray-200 rounded-xl text-gray-600 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed transition-all shadow-sm"
+                    title="Anular última ação (Undo)"
+                  >
+                    <RotateCcw className="w-5 h-5" />
+                  </button>
+                  <button 
+                    onClick={handleFinishAmbiguityReview}
+                    className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 flex items-center gap-2"
+                  >
+                    <Check className="w-4 h-4" />
+                    Concluir e Agrupar
+                  </button>
+                </div>
               </div>
 
               <div className="p-6 overflow-y-auto flex-1 space-y-4">

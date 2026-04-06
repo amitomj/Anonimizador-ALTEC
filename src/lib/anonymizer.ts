@@ -30,7 +30,7 @@ export const PII_COLORS: Record<string, { bg: [number, number, number], text: [n
   AUTOR: { bg: [0, 0, 0], text: [1, 1, 1], hex: '#000000', textHex: '#FFFFFF' },      // Preto
   JUIZ: { bg: [0, 0, 0.5], text: [1, 1, 1], hex: '#000080', textHex: '#FFFFFF' },     // Azul Marinho
   MATRICULA: { bg: [0.8, 0.8, 0], text: [0, 0, 0], hex: '#CCCC00', textHex: '#000000' }, // Amarelo Escuro
-  TESTEMUNHA: { bg: [0.5, 0.5, 0.5], text: [1, 1, 1], hex: '#808080', textHex: '#FFFFFF' }, // Cinza
+  ADVOGADO: { bg: [0.5, 0.5, 0.5], text: [1, 1, 1], hex: '#808080', textHex: '#FFFFFF' }, // Cinza
 };
 
 // Lista de exceções globais padrão
@@ -111,6 +111,7 @@ const PII_PATTERNS = {
   MATRICULA: /\b(?:[A-Z]{2}-\d{2}-\d{2}|\d{2}-\d{2}-[A-Z]{2}|\d{2}-[A-Z]{2}-\d{2}|[A-Z]{2}-\d{2}-[A-Z]{2})\b/g,
   JUIZ: /\bJuiz(?:\(a\))?\s+(?:de\s+Direito\s+)?([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
   AUTOR: /\bAutor(?:\(a\))?\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
+  ADVOGADO: /\b(?:Advogado|Advogada|Mandatário|Mandatária)\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
   // More aggressive name patterns for Portuguese - updated to handle internal spaces like "F erreira"
   NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Réu|Mandatário|Advogado|Advogada|Recorrente|Recorrido)\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))+)/g,
   NOME_CAPS: /\b([A-ZÀ-Ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e|DE|DA|DO|DOS|DAS|E)\s+[A-ZÀ-Ÿ]{2,}|\s+[A-ZÀ-Ÿ]{2,}){1,8})\b/g,
@@ -232,7 +233,7 @@ export function getNextPseudonym(type: string, existingEntities: PIIEntity[]): s
     MATRICULA: 'MATRICULA',
     AUTOR: 'AUTOR',
     JUIZ: 'JUIZ',
-    TESTEMUNHA: 'TESTEMUNHA',
+    ADVOGADO: 'ADVOGADO',
   };
 
   const prefix = prefixes[type] || type;
@@ -349,7 +350,11 @@ export function scanText(
         if (protectedRanges.some(r => start >= r.start && end <= r.end)) continue;
 
         // Verificar se é palavra a ignorar (PASSO B)
-        if (normalizedWordsIgnore.has(normalizeText(matchText))) continue;
+        const norm = normalizeText(matchText);
+        if (normalizedWordsIgnore.has(norm)) continue;
+        
+        // Verificar se está no conhecimento global como EXCECAO (PASSO C)
+        if (normalizedKnowledge.get(norm) === 'EXCECAO') continue;
 
         foundMatches.push({
           text: matchText,
@@ -362,7 +367,7 @@ export function scanText(
 
   // 2. Portuguese Legal Patterns (Parties)
   const legalPatterns = [
-    /(?:Recorrente|Recorrido|Requerente|Requerido|Réu|Participante|Denunciado|Arguido|Assistente|Testemunha|Beneficiário|Executado|Exequente|Oponente|Reclamante|Reclamado|Interveniente|Contrainteressado|Apelante|Apelado|Agravante|Agravado|Embargante|Embargado|Demandante|Demandado):\s*([^,.;\n]+)/gi,
+    /(?:Recorrente|Recorrido|Requerente|Requerido|Réu|Participante|Denunciado|Arguido|Assistente|Beneficiário|Executado|Exequente|Oponente|Reclamante|Reclamado|Interveniente|Contrainteressado|Apelante|Apelado|Agravante|Agravado|Embargante|Embargado|Demandante|Demandado|Advogado|Advogada|Mandatário|Mandatária):\s*([^,.;\n]+)/gi,
     /(?:Nome|Apelido|Filiação|Naturalidade|Residência|Sede):\s*([^,.;\n]+)/gi,
   ];
 
@@ -392,6 +397,8 @@ export function scanText(
           type = 'AUTOR';
         } else if (prefix.includes('juiz') || prefix.includes('desembargador')) {
           type = 'JUIZ';
+        } else if (prefix.includes('advogado') || prefix.includes('advogada') || prefix.includes('mandatário') || prefix.includes('mandatária')) {
+          type = 'ADVOGADO';
         }
 
         foundMatches.push({
@@ -438,7 +445,7 @@ export function scanText(
     let trimmed = original.trim();
     
     // Clean names specifically
-    if (type === 'NOME' || type === 'AUTOR' || type === 'JUIZ') {
+    if (type === 'NOME' || type === 'AUTOR' || type === 'JUIZ' || type === 'ADVOGADO') {
       trimmed = cleanName(trimmed);
     } else {
       trimmed = trimmed.replace(/[.,;]+$/, '');
