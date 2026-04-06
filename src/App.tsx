@@ -23,6 +23,7 @@ import {
   splitEntity,
   getNextPseudonym,
   cleanName,
+  superNormalize,
   PIIEntity,
   PII_COLORS,
   Safelist
@@ -770,14 +771,26 @@ export default function App() {
 
   const handleAddSelectedToExceptions = () => {
     const selectedEntities = entities.filter(e => selectedIds.has(e.id));
+    if (selectedEntities.length === 0) return;
+
     const newKnowledge = { ...globalKnowledge };
+    const textsToRemove = new Set<string>();
     
     selectedEntities.forEach(e => {
-      newKnowledge[e.original.toLowerCase().trim()] = 'EXCECAO';
+      const text = e.original.toLowerCase().trim();
+      newKnowledge[text] = 'EXCECAO';
+      textsToRemove.add(text);
     });
     
     setGlobalKnowledge(newKnowledge);
-    handleIgnoreSelected();
+    
+    setEntities(prev => {
+      const next = prev.filter(e => !textsToRemove.has(e.original.toLowerCase().trim()));
+      pushToHistory(next, files);
+      return next;
+    });
+    
+    setSelectedIds(new Set());
     showToast(`${selectedEntities.length} termos adicionados às EXCEÇÕES GLOBAIS.`, "success");
   };
 
@@ -4676,7 +4689,7 @@ export default function App() {
                         <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Expressões (Phrases)</h4>
                         <div className="space-y-2">
                           {safelist.phrases_ignore
-                            .filter(p => p.toLowerCase().includes(knowledgeSearch.toLowerCase()))
+                            .filter(p => superNormalize(p).includes(superNormalize(knowledgeSearch)))
                             .sort()
                             .map(phrase => (
                               <div key={phrase} className="flex items-center justify-between bg-indigo-50/50 p-3 rounded-xl border border-indigo-100 group">
@@ -4710,7 +4723,7 @@ export default function App() {
                         <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Palavras (Words)</h4>
                         <div className="flex flex-wrap gap-2">
                           {safelist.words_ignore
-                            .filter(w => w.toLowerCase().includes(knowledgeSearch.toLowerCase()))
+                            .filter(w => superNormalize(w).includes(superNormalize(knowledgeSearch)))
                             .sort()
                             .map(word => (
                               <div key={word} className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-full border border-gray-200 group">
@@ -4754,7 +4767,7 @@ export default function App() {
                     ) : (
                       <div className="space-y-2">
                         {Object.entries(globalKnowledge)
-                          .filter(([text, type]) => type === exceptionsTab && text.toLowerCase().includes(knowledgeSearch.toLowerCase()))
+                          .filter(([text, type]) => type === exceptionsTab && superNormalize(text).includes(superNormalize(knowledgeSearch)))
                           .sort((a, b) => a[0].localeCompare(b[0]))
                           .map(([text, type]) => (
                             <div key={text} className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-100 group">

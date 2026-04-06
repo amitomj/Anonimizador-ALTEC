@@ -251,6 +251,36 @@ export function normalizeText(text: string): string {
     .trim();
 }
 
+// Super normalização: remove TUDO exceto letras e números para comparação ultra-robusta
+export function superNormalize(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+// Distância de Levenshtein para detetar pequenas trocas de letras (typos)
+export function levenshteinDistance(a: string, b: string): number {
+  const matrix = Array.from({ length: a.length + 1 }, () =>
+    Array.from({ length: b.length + 1 }, (_, i) => i)
+  );
+  for (let i = 1; i <= a.length; i++) matrix[i][0] = i;
+  for (let j = 1; j <= b.length; j++) matrix[0][j] = j;
+  
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,      // Deletion
+        matrix[i][j - 1] + 1,      // Insertion
+        matrix[i - 1][j - 1] + cost // Substitution
+      );
+    }
+  }
+  return matrix[a.length][b.length];
+}
+
 // Função para comparar texto ignorando acentos e case
 export function isMatchNormalized(text: string, term: string): boolean {
   const normText = normalizeText(text);
@@ -312,9 +342,51 @@ export function scanText(
 
   // PASSO C: Conhecimento Global normalizado para busca rápida
   const normalizedKnowledge = new Map<string, string>();
+  const superNormalizedExceptions = new Set<string>();
+  
+  // Adicionar palavras e frases da safelist às exceções super normalizadas
+  safelist.words_ignore.forEach(w => superNormalizedExceptions.add(superNormalize(w)));
+  safelist.phrases_ignore.forEach(p => superNormalizedExceptions.add(superNormalize(p)));
+
   Object.entries(globalKnowledge).forEach(([k, t]) => {
-    normalizedKnowledge.set(normalizeText(k), t);
+    const norm = normalizeText(k);
+    normalizedKnowledge.set(norm, t);
+    if (t === 'EXCECAO') {
+      superNormalizedExceptions.add(superNormalize(k));
+    }
   });
+
+  // Helper para verificar se um texto é uma exceção de forma robusta
+  const isException = (matchText: string): boolean => {
+    const norm = normalizeText(matchText);
+    if (normalizedWordsIgnore.has(norm)) return true;
+    if (normalizedKnowledge.get(norm) === 'EXCECAO') return true;
+
+    const snorm = superNormalize(matchText);
+    if (superNormalizedExceptions.has(snorm)) return true;
+
+    // Fuzzy matching para pequenas trocas de letras (typos)
+    // Apenas para termos com comprimento razoável para evitar falsos positivos
+    if (snorm.length >= 3) {
+      for (const ex of superNormalizedExceptions) {
+        // Se a diferença de tamanho for pequena e a distância for 1, consideramos match
+        if (Math.abs(ex.length - snorm.length) <= 1) {
+          if (levenshteinDistance(ex, snorm) <= 1) return true;
+        }
+      }
+    }
+
+    // Caso especial: Se for um nome composto (ex: "I. Pelos"), verificar se a parte principal é exceção
+    if (snorm.length > 3) {
+      const parts = matchText.split(/[\s.]+/).filter(p => p.length > 2);
+      for (const part of parts) {
+        const sp = superNormalize(part);
+        if (superNormalizedExceptions.has(sp)) return true;
+      }
+    }
+
+    return false;
+  };
 
   // PASSO D: Identificar nomes conhecidos no texto antes de outros padrões
   // Isto garante que nomes completos sejam capturados mesmo que o NLP falhe
@@ -352,12 +424,8 @@ export function scanText(
         // Verificar se está em área protegida (PASSO A) - Melhorado para detetar sobreposições
         if (protectedRanges.some(r => start < r.end && end > r.start)) continue;
 
-        // Verificar se é palavra a ignorar (PASSO B)
-        const norm = normalizeText(matchText);
-        if (normalizedWordsIgnore.has(norm)) continue;
-        
-        // Verificar se está no conhecimento global como EXCECAO (PASSO C)
-        if (normalizedKnowledge.get(norm) === 'EXCECAO') continue;
+        // Verificação robusta de exceções (PASSO B, C e Fuzzy)
+        if (isException(matchText)) continue;
 
         foundMatches.push({
           text: matchText,
@@ -385,9 +453,8 @@ export function scanText(
         // Verificar Safelist - Melhorado para detetar sobreposições
         if (protectedRanges.some(r => index < r.end && end > r.start)) continue;
         
-        const norm = normalizeText(matchText);
-        if (normalizedWordsIgnore.has(norm)) continue;
-        if (normalizedKnowledge.get(norm) === 'EXCECAO') continue;
+        // Verificação robusta de exceções
+        if (isException(matchText)) continue;
         
         let type = 'NOME';
         const prefix = match[0].split(':')[0].toLowerCase();
