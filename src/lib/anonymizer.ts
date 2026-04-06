@@ -292,7 +292,10 @@ export function scanText(
     
     // Permitir múltiplos espaços entre palavras
     const withSpaces = withAccents.replace(/\s+/g, '\\s+');
-    return new RegExp(`\\b${withSpaces}\\b`, 'gi');
+    // Usar lookarounds em vez de \b para suporte a Unicode (acentos)
+    // (?<![a-zA-ZÀ-ÿ]) garante que não é precedido por uma letra
+    // (?![a-zA-ZÀ-ÿ]) garante que não é seguido por uma letra
+    return new RegExp(`(?<![a-zA-ZÀ-ÿ])${withSpaces}(?![a-zA-ZÀ-ÿ])`, 'gi');
   };
 
   // PASSO A: Expressões a ignorar
@@ -346,8 +349,8 @@ export function scanText(
         const start = match.index + (match[0].indexOf(matchText));
         const end = start + matchText.length;
 
-        // Verificar se está em área protegida (PASSO A)
-        if (protectedRanges.some(r => start >= r.start && end <= r.end)) continue;
+        // Verificar se está em área protegida (PASSO A) - Melhorado para detetar sobreposições
+        if (protectedRanges.some(r => start < r.end && end > r.start)) continue;
 
         // Verificar se é palavra a ignorar (PASSO B)
         const norm = normalizeText(matchText);
@@ -379,9 +382,12 @@ export function scanText(
         const index = match.index + match[0].indexOf(matchText);
         const end = index + matchText.length;
 
-        // Verificar Safelist
-        if (protectedRanges.some(r => index >= r.start && end <= r.end)) continue;
-        if (normalizedWordsIgnore.has(normalizeText(matchText))) continue;
+        // Verificar Safelist - Melhorado para detetar sobreposições
+        if (protectedRanges.some(r => index < r.end && end > r.start)) continue;
+        
+        const norm = normalizeText(matchText);
+        if (normalizedWordsIgnore.has(norm)) continue;
+        if (normalizedKnowledge.get(norm) === 'EXCECAO') continue;
         
         let type = 'NOME';
         const prefix = match[0].split(':')[0].toLowerCase();

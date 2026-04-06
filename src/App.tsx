@@ -309,7 +309,7 @@ export default function App() {
   const [splitView, setSplitView] = useState(false);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
-  const [history, setHistory] = useState<{ entities: PIIEntity[], files: FileData[] }[]>([]);
+  const [history, setHistory] = useState<{ entities: PIIEntity[], files: FileData[], ambiguousEntities: PIIEntity[] }[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const isHistoryAction = useRef(false);
 
@@ -387,12 +387,16 @@ export default function App() {
     setToast({ message, type });
   };
 
-  const pushToHistory = useCallback((newEntities: PIIEntity[], newFiles: FileData[]) => {
+  const pushToHistory = useCallback((newEntities: PIIEntity[], newFiles: FileData[], newAmbiguous: PIIEntity[] = ambiguousEntities) => {
     if (isHistoryAction.current) {
       isHistoryAction.current = false;
       return;
     }
-    const newState = { entities: JSON.parse(JSON.stringify(newEntities)), files: JSON.parse(JSON.stringify(newFiles)) };
+    const newState = { 
+      entities: JSON.parse(JSON.stringify(newEntities)), 
+      files: JSON.parse(JSON.stringify(newFiles)),
+      ambiguousEntities: JSON.parse(JSON.stringify(newAmbiguous))
+    };
     setHistory(prev => {
       const next = prev.slice(0, historyIndex + 1);
       next.push(newState);
@@ -403,7 +407,7 @@ export default function App() {
       const next = prev + 1;
       return next > 29 ? 29 : next;
     });
-  }, [historyIndex]);
+  }, [historyIndex, ambiguousEntities]);
 
   const undo = () => {
     if (historyIndex > 0) {
@@ -411,6 +415,7 @@ export default function App() {
       const prevState = history[historyIndex - 1];
       setEntities(prevState.entities);
       setFiles(prevState.files);
+      setAmbiguousEntities(prevState.ambiguousEntities);
       setHistoryIndex(historyIndex - 1);
       showToast("Ação anulada", "info");
     }
@@ -422,6 +427,7 @@ export default function App() {
       const nextState = history[historyIndex + 1];
       setEntities(nextState.entities);
       setFiles(nextState.files);
+      setAmbiguousEntities(nextState.ambiguousEntities);
       setHistoryIndex(historyIndex + 1);
       showToast("Ação refeita", "info");
     }
@@ -586,6 +592,7 @@ export default function App() {
         console.log(`Found ${fileEntities.length} entities in file ${fileData.name}`);
         allNewEntities = [...allNewEntities, ...fileEntities];
 
+        fileData.content = text;
         setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, content: text, status: 'done' } : f));
       } catch (error) {
         console.error(`Error processing file ${fileData.name}:`, error);
@@ -598,16 +605,23 @@ export default function App() {
       (e.original.includes(' e ') || e.original.includes(',') || e.original.includes('  '))
     );
 
+    const updatedFiles = files.map(f => {
+      const processed = filesToProcess.find(p => p.id === f.id);
+      if (processed) return { ...f, content: (processed as any).content, status: 'done' };
+      return f;
+    });
+
     if (potentialAmbiguities.length > 0) {
       setAmbiguousEntities(allNewEntities);
       setShowAmbiguityModal(true);
       setIsProcessing(false);
+      pushToHistory(entities, updatedFiles, allNewEntities);
       return;
     }
 
     const grouped = groupSimilarEntities(allNewEntities, isRelated);
     setEntities(grouped);
-    pushToHistory(grouped, filesToProcess);
+    pushToHistory(grouped, updatedFiles);
     setIsProcessing(false);
   };
 
@@ -1221,17 +1235,26 @@ export default function App() {
         }
         next.push(entity);
       });
+      pushToHistory(entities, files, next);
       return next;
     });
   };
 
   const handleMarkAsReviewed = (id: string) => {
-    setAmbiguousEntities(prev => prev.map(e => e.id === id ? { ...e, reviewed: !e.reviewed } : e));
+    setAmbiguousEntities(prev => {
+      const next = prev.map(e => e.id === id ? { ...e, reviewed: !e.reviewed } : e);
+      pushToHistory(entities, files, next);
+      return next;
+    });
   };
 
   const handleAddToExceptionsFromAmbiguity = (text: string) => {
     addToGlobalKnowledge(text, 'EXCECAO');
-    setAmbiguousEntities(prev => prev.filter(e => e.original.toLowerCase() !== text.toLowerCase()));
+    setAmbiguousEntities(prev => {
+      const next = prev.filter(e => e.original.toLowerCase() !== text.toLowerCase());
+      pushToHistory(entities, files, next);
+      return next;
+    });
     showToast(`"${text}" adicionado às exceções globais.`, "info");
   };
 
