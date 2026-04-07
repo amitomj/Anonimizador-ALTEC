@@ -31,6 +31,7 @@ export const PII_COLORS: Record<string, { bg: [number, number, number], text: [n
   JUIZ: { bg: [0, 0, 0.5], text: [1, 1, 1], hex: '#000080', textHex: '#FFFFFF' },     // Azul Marinho
   MATRICULA: { bg: [0.8, 0.8, 0], text: [0, 0, 0], hex: '#CCCC00', textHex: '#000000' }, // Amarelo Escuro
   ADVOGADO: { bg: [0.5, 0.5, 0.5], text: [1, 1, 1], hex: '#808080', textHex: '#FFFFFF' }, // Cinza
+  COLETIVA: { bg: [0.5, 0.2, 0.1], text: [1, 1, 1], hex: '#8B4513', textHex: '#FFFFFF' }, // Marrom (SaddleBrown)
 };
 
 // Lista de exceções globais padrão
@@ -121,6 +122,7 @@ const PII_PATTERNS = {
   NOME_AND: /\b([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*\s+e\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)\b/g,
   // Legal context patterns
   NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à|recorrente|recorrido)(?:,\s*|\s+)([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){1,8})/g,
+  COLETIVA: /\b(?:Associação|Fundação|Cooperativa|Sociedade|Empresa|Escola|Faculdade|Universidade|Instituto|Centro|Agrupamento|Sindicato|Banco|Seguradora|Companhia|Câmara|Junta|Assembleia|Governo|Estado|República|Ministério|Tribunal|Conselho|Direção|Serviço|Autoridade|Comissão|Unidade|Núcleo|Agência)\s+([A-ZÀ-ÿ][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+|\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+){1,8})\b|\b([A-ZÀ-ÿ][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+|\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+){0,8})\s+(?:Lda\.?|Limitada|S\.A\.?|Sociedade\s+Anónima|Unipessoal|S\.?C\.?P\.?|S\.?P\.?Q\.?)\b/g,
 };
 
 const NAME_TITLES = [
@@ -234,6 +236,7 @@ export function getNextPseudonym(type: string, existingEntities: PIIEntity[]): s
     AUTOR: 'AUTOR',
     JUIZ: 'JUIZ',
     ADVOGADO: 'ADVOGADO',
+    COLETIVA: 'COLETIVA',
   };
 
   const prefix = prefixes[type] || type;

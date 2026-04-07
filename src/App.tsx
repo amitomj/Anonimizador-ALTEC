@@ -5,7 +5,7 @@ import {
   History, Link, ChevronDown, ChevronUp, ChevronRight, Search, Filter,
   MoreVertical, Copy, CheckCircle2, User, MapPin, Phone, 
   CreditCard, Mail, Hash, Briefcase, Scale, Trash, RotateCcw, RotateCw,
-  Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type, List, Pencil, RefreshCw
+  Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type, List, Pencil, RefreshCw, Building2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjs from 'pdfjs-dist';
@@ -31,7 +31,7 @@ import {
 
 const ORDERED_PII_TYPES = (() => {
   const types = Object.keys(PII_COLORS);
-  const priority = ['NOME', 'ADVOGADO', 'JUIZ', 'AUTOR'];
+  const priority = ['NOME', 'ADVOGADO', 'JUIZ', 'AUTOR', 'COLETIVA'];
   
   return types.sort((a, b) => {
     const aIdx = priority.indexOf(a);
@@ -794,6 +794,31 @@ export default function App() {
     showToast(`${selectedEntities.length} termos adicionados às EXCEÇÕES GLOBAIS.`, "success");
   };
 
+  const handleAddSelectedToColetiva = () => {
+    const selectedEntities = entities.filter(e => selectedIds.has(e.id));
+    if (selectedEntities.length === 0) return;
+
+    const newKnowledge = { ...globalKnowledge };
+    const textsToRemove = new Set<string>();
+    
+    selectedEntities.forEach(e => {
+      const text = e.original.toLowerCase().trim();
+      newKnowledge[text] = 'COLETIVA';
+      textsToRemove.add(text);
+    });
+    
+    setGlobalKnowledge(newKnowledge);
+    
+    setEntities(prev => {
+      const next = prev.filter(e => !textsToRemove.has(e.original.toLowerCase().trim()));
+      pushToHistory(next, files);
+      return next;
+    });
+    
+    setSelectedIds(new Set());
+    showToast(`${selectedEntities.length} termos adicionados como PESSOA COLETIVA.`, "success");
+  };
+
   const handleGroupSelected = () => {
     if (selectedIds.size < 2) return;
     
@@ -1092,7 +1117,7 @@ export default function App() {
     }
 
     // Side effects after state update
-    if (updated.type === 'EXCECAO' || updated.type === 'JUIZ' || updated.type === 'AUTOR') {
+    if (updated.type === 'EXCECAO' || updated.type === 'JUIZ' || updated.type === 'AUTOR' || updated.type === 'COLETIVA') {
       addToGlobalKnowledge(updated.original, updated.type);
     }
     if (editingEntity && editingEntity.id === id) {
@@ -1107,7 +1132,7 @@ export default function App() {
       const affectedGroupIds = new Set<string>();
 
       prev.forEach(entity => {
-        if ((entity.type === 'NOME' || entity.type === 'AUTOR' || entity.type === 'JUIZ') && 
+        if ((entity.type === 'NOME' || entity.type === 'AUTOR' || entity.type === 'JUIZ' || entity.type === 'COLETIVA') && 
             entity.original.includes(' e ') && 
             !entity.original.toLowerCase().startsWith('e ') && 
             !entity.original.toLowerCase().endsWith(' e')) {
@@ -1467,6 +1492,57 @@ export default function App() {
     } catch (err) {
       console.error("Erro ao importar autores:", err);
       showToast("Erro ao processar o ficheiro de autores.", "error");
+    } finally {
+      setIsProcessing(false);
+      event.target.value = '';
+    }
+  };
+
+  const handleImportColetivas = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    
+    setIsProcessing(true);
+    try {
+      let text = '';
+      if (file.type === 'application/pdf') {
+        text = await extractTextFromPDF(file);
+      } else {
+        text = await file.text();
+      }
+      
+      if (!text || text.trim().length === 0) {
+        showToast("Não foi possível extrair texto do ficheiro.", "error");
+        return;
+      }
+
+      const rawLines = text.split(/[\n\r,;|\t]+/).map(l => l.trim()).filter(l => l.length > 3);
+      const newColetivas: Record<string, string> = {};
+      let count = 0;
+      
+      rawLines.forEach(line => {
+        const cleaned = line.replace(/\s+/g, ' ').trim();
+        if (cleaned.length >= 3) {
+          newColetivas[cleaned.toLowerCase()] = 'COLETIVA';
+          count++;
+        }
+      });
+      
+      if (count === 0) {
+        showToast("Nenhuma pessoa coletiva válida foi encontrada.", "error");
+      } else {
+        setGlobalKnowledge(prev => {
+          const next = { ...prev };
+          Object.keys(next).forEach(key => {
+            if (next[key] === 'COLETIVA') delete next[key];
+          });
+          return { ...next, ...newColetivas };
+        });
+        showToast(`${count} pessoas coletivas importadas e lista atualizada.`, "success");
+      }
+    } catch (err) {
+      console.error("Erro ao importar pessoas coletivas:", err);
+      showToast("Erro ao processar o ficheiro.", "error");
     } finally {
       setIsProcessing(false);
       event.target.value = '';
@@ -3538,6 +3614,14 @@ export default function App() {
                 <Shield className="w-4 h-4" />
                 <span>Exceção</span>
               </button>
+              <button 
+                onClick={handleAddSelectedToColetiva}
+                className="flex items-center gap-2 bg-stone-600 hover:bg-stone-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-lg shadow-stone-200"
+                title="Marcar como Pessoa Coletiva e ignorar em todos os documentos"
+              >
+                <Building2 className="w-4 h-4" />
+                <span>Coletiva</span>
+              </button>
               {copiedPseudonym && (
                 <button 
                   onClick={handlePastePseudonym}
@@ -4524,6 +4608,12 @@ export default function App() {
                   Autores
                 </button>
                 <button 
+                  onClick={() => setExceptionsTab('COLETIVA')}
+                  className={`flex-1 py-3 text-sm font-bold transition-colors ${exceptionsTab === 'COLETIVA' ? 'text-indigo-600 border-b-2 border-indigo-600 bg-indigo-50/30' : 'text-gray-500 hover:bg-gray-50'}`}
+                >
+                  Coletivas
+                </button>
+                <button 
                   onClick={() => setExceptionsTab('SAFELIST')}
                   className={`flex-1 py-3 text-sm font-bold transition-colors ${exceptionsTab === 'SAFELIST' ? 'text-indigo-600 border-b-2 border-indigo-600 bg-indigo-50/30' : 'text-gray-500 hover:bg-gray-50'}`}
                 >
@@ -4648,6 +4738,23 @@ export default function App() {
                         </label>
                       </div>
                     )}
+                    {exceptionsTab === 'COLETIVA' && (
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={() => handleIdentifyDuplicates('COLETIVA')}
+                          className="text-xs font-bold text-amber-600 hover:text-amber-800 flex items-center gap-1 transition-colors bg-amber-50 px-2 py-1 rounded"
+                          title="Identificar possíveis nomes duplicados"
+                        >
+                          <Copy className="w-3 h-3" />
+                          Identificar Duplicados
+                        </button>
+                        <label className="cursor-pointer text-xs font-bold text-gray-500 hover:text-gray-700 flex items-center gap-1 transition-colors bg-gray-50 px-2 py-1 rounded" title="Importar novo ficheiro PDF/TXT de pessoas coletivas">
+                          <Upload className="w-3 h-3" />
+                          <span>Importar Novo (PDF/TXT)</span>
+                          <input type="file" accept=".pdf,.txt" className="hidden" onChange={handleImportColetivas} />
+                        </label>
+                      </div>
+                    )}
                     {exceptionsTab === 'SAFELIST' && (
                       <div className="flex items-center gap-2">
                         <label className="cursor-pointer text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 transition-colors bg-indigo-50 px-2 py-1 rounded" title="Importar Safelist (JSON ou TXT)">
@@ -4670,7 +4777,7 @@ export default function App() {
                       className="text-xs font-bold text-red-500 hover:text-red-700 flex items-center gap-1 transition-colors"
                     >
                       <Trash2 className="w-3 h-3" />
-                      Limpar {exceptionsTab === 'EXCECAO' ? 'Exceções' : exceptionsTab === 'JUIZ' ? 'Juízes' : exceptionsTab === 'AUTOR' ? 'Autores' : 'Safelist'}
+                      Limpar {exceptionsTab === 'EXCECAO' ? 'Exceções' : exceptionsTab === 'JUIZ' ? 'Juízes' : exceptionsTab === 'AUTOR' ? 'Autores' : exceptionsTab === 'COLETIVA' ? 'Coletivas' : 'Safelist'}
                     </button>
                     <button 
                       onClick={handleClearAllGlobalKnowledge}
@@ -4788,6 +4895,7 @@ export default function App() {
                                   <option value="EXCECAO">Exceção</option>
                                   <option value="JUIZ">Juiz</option>
                                   <option value="AUTOR">Autor</option>
+                                  <option value="COLETIVA">Coletiva</option>
                                 </select>
                                 <button 
                                   onClick={() => setGlobalKnowledge(prev => {
