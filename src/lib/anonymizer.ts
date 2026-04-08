@@ -16,6 +16,7 @@ export interface PIIEntity {
   contextAfter?: string; // Snippet after
   contextSnippet?: string; // 2 words before + entity + 2 words after
   reviewed?: boolean; // For ambiguity review
+  score?: number; // Confidence score
 }
 
 export const PII_COLORS: Record<string, { bg: [number, number, number], text: [number, number, number], hex: string, textHex: string }> = {
@@ -33,6 +34,160 @@ export const PII_COLORS: Record<string, { bg: [number, number, number], text: [n
   ADVOGADO: { bg: [0.5, 0.5, 0.5], text: [1, 1, 1], hex: '#808080', textHex: '#FFFFFF' }, // Cinza
   COLETIVA: { bg: [0.5, 0.2, 0.1], text: [1, 1, 1], hex: '#8B4513', textHex: '#FFFFFF' }, // Marrom (SaddleBrown)
 };
+
+// Dicionário de nomes comuns em Portugal para aumentar a precisão
+const COMMON_PT_FIRST_NAMES = new Set([
+  'Maria', 'Ana', 'João', 'José', 'Francisco', 'António', 'Manuel', 'Carlos', 'Pedro', 'Paulo',
+  'Luís', 'Miguel', 'Ricardo', 'Nuno', 'Rui', 'Vítor', 'Jorge', 'Joaquim', 'Fernando', 'Luísa',
+  'Isabel', 'Teresa', 'Margarida', 'Helena', 'Cristina', 'Rita', 'Sofia', 'Inês', 'Mariana', 'Beatriz',
+  'Tiago', 'Gonçalo', 'Diogo', 'André', 'Filipe', 'Duarte', 'Afonso', 'Rodrigo', 'Martim', 'Lourenço',
+  'Guilherme', 'Gabriel', 'Mateus', 'Lucas', 'Daniel', 'David', 'Samuel', 'Rafael', 'Hugo', 'Bruno',
+  'Sérgio', 'Marco', 'Alexandre', 'Nelson', 'Eduardo', 'Artur', 'Mário', 'Álvaro', 'Augusto', 'Alfredo',
+  'Leonor', 'Matilde', 'Carolina', 'Alice', 'Benedita', 'Francisca', 'Clara', 'Laura', 'Vera', 'Marta',
+  'Sara', 'Diana', 'Patrícia', 'Sílvia', 'Sandra', 'Paula', 'Carla', 'Mónica', 'Cláudia', 'Sónia',
+  'Catarina', 'Daniela', 'Andreia', 'Joana', 'Filipa', 'Alexandra', 'Telma', 'Tânia', 'Vanessa', 'Rute',
+  'Marcelo', 'Bernardo', 'Gustavo', 'Henrique', 'Leonardo', 'Salvador', 'Tomás', 'Vicente', 'Valter',
+  'Cláudio', 'Dinis', 'Emanuel', 'Fábio', 'Gil', 'Hélder', 'Igor', 'Jaime', 'Kevin', 'Leandro',
+  'Mauro', 'Nicolau', 'Otávio', 'Patrício', 'Quelvin', 'Renato', 'Simão', 'Tadeu', 'Urbano', 'Vasco',
+  'Wilson', 'Xavier', 'Yuri', 'Zacarias', 'Abel', 'Adelaide', 'Adolfo', 'Adriana', 'Adriano', 'Agostinho',
+  'Albano', 'Alberto', 'Albina', 'Alda', 'Amadeu', 'Amélia', 'Américo', 'Amílcar', 'Anabela', 'Anacleto',
+  'Antero', 'Apolinário', 'Arnaldo', 'Arsenio', 'Ascensão', 'Assunção', 'Áurea', 'Aurélio', 'Aurora',
+  'Bárbara', 'Basílio', 'Belmiro', 'Bento', 'Berta', 'Bia', 'Branca', 'Brites', 'Caetano', 'Cândida',
+  'Cândido', 'Carina', 'Carminda', 'Carmo', 'Casimiro', 'Cecília', 'Celeste', 'Célia', 'Celina', 'Celso',
+  'César', 'Cidália', 'Ciro', 'Constantino', 'Cosme', 'Custódio', 'Dália', 'Dalila', 'Damaso', 'Damião',
+  'Dário', 'Delfim', 'Delfina', 'Deolinda', 'Desidério', 'Diamantino', 'Dina', 'Dionísio', 'Domingos',
+  'Dora', 'Dores', 'Doroteia', 'Edgar', 'Edite', 'Edmundo', 'Elisa', 'Elisabete', 'Elmano', 'Elsa',
+  'Elvira', 'Elza', 'Emília', 'Emílio', 'Ercília', 'Ernesto', 'Esmeralda', 'Estefânia', 'Estêvão',
+  'Estrela', 'Etelvina', 'Eugénia', 'Eugénio', 'Eulália', 'Eusébio', 'Eva', 'Evaristo', 'Evelina',
+  'Faustino', 'Fausto', 'Felicidade', 'Feliciano', 'Felisberto', 'Felismina', 'Fidélio', 'Filomena',
+  'Firmino', 'Flávia', 'Flávio', 'Florbela', 'Florença', 'Florinda', 'Fortunato', 'Frederico', 'Gaspar',
+  'Genciana', 'Genoveva', 'Geraldo', 'Gertrudes', 'Gisela', 'Glória', 'Gracinda', 'Graça', 'Gregório',
+  'Gualter', 'Guarani', 'Guendolina', 'Guiomar', 'Haroldo', 'Heitor', 'Helder', 'Hélder', 'Heliodoro',
+  'Hélio', 'Henriqueta', 'Heraldo', 'Herberto', 'Herculano', 'Hermenegildo', 'Hermínia', 'Hermínio',
+  'Higino', 'Hilario', 'Hilário', 'Hipólito', 'Horácio', 'Hortênsia', 'Ilda', 'Ilídio', 'Inácio',
+  'Iolanda', 'Irene', 'Irineu', 'Íris', 'Isidoro', 'Isidro', 'Isilda', 'Ismael', 'Iva', 'Ivan',
+  'Ivone', 'Izidoro', 'Jacinta', 'Jacinto', 'Jandira', 'Januário', 'Jesuína', 'Jesuíno', 'Jesus',
+  'Job', 'Joel', 'Jonas', 'Jordão', 'Josué', 'Jovita', 'Judite', 'Júlia', 'Juliana', 'Juliano',
+  'Julieta', 'Júlio', 'Justina', 'Justino', 'Juvenal', 'Lara', 'Lázaro', 'Lélia', 'Lénia', 'Lia',
+  'Libânio', 'Licínio', 'Lídia', 'Lidiana', 'Liete', 'Lígia', 'Lília', 'Liliana', 'Lina', 'Lino',
+  'Lívia', 'Lopo', 'Lorena', 'Lourdes', 'Lucas', 'Lúcia', 'Luciana', 'Luciano', 'Lucília', 'Lucílio',
+  'Lucinda', 'Lucindo', 'Lucrécia', 'Ludgero', 'Ludovina', 'Luís', 'Luísa', 'Lurdes', 'Luzia',
+  'Madalena', 'Mafalda', 'Magda', 'Malvina', 'Manuela', 'Mara', 'Marcelina', 'Marcelino', 'Marcília',
+  'Márcio', 'Margarida', 'Maria', 'Mariana', 'Marília', 'Marina', 'Marinho', 'Mário', 'Marisa',
+  'Marlene', 'Marta', 'Martim', 'Martinho', 'Mateus', 'Matilde', 'Maura', 'Maurício', 'Maximiliano',
+  'Maximino', 'Melinda', 'Mélvin', 'Mercês', 'Messias', 'Micael', 'Micaela', 'Milton', 'Mílton',
+  'Miriam', 'Modesto', 'Moisés', 'Mónica', 'Morgana', 'Muriel', 'Nádia', 'Nadir', 'Narciso',
+  'Natália', 'Natalina', 'Natalino', 'Nazaré', 'Neide', 'Nélia', 'Nélio', 'Nélson', 'Nestor',
+  'Neuza', 'Nicanor', 'Nícia', 'Nivaldo', 'Noé', 'Noel', 'Noémia', 'Norberto', 'Nuno', 'Octávio',
+  'Odete', 'Ofélia', 'Olga', 'Olímpia', 'Olímpio', 'Olinda', 'Olindo', 'Olívia', 'Onofre', 'Orlandina',
+  'Orlando', 'Oscar', 'Óscar', 'Osvaldo', 'Otília', 'Ouvídio', 'Palmira', 'Pancrácio', 'Pandora',
+  'Pascoal', 'Pastor', 'Patrícia', 'Patrício', 'Paula', 'Paulina', 'Paulino', 'Paulo', 'Pedro',
+  'Penélope', 'Perpétua', 'Piedade', 'Plácido', 'Policarpo', 'Prudêncio', 'Pura', 'Purificação',
+  'Quitéria', 'Rachel', 'Raimundo', 'Raquel', 'Raul', 'Rebeca', 'Regina', 'Reinaldo', 'Remígio',
+  'Renata', 'Renato', 'Ricardina', 'Ricardo', 'Rita', 'Rivaldo', 'Roberto', 'Rodolfo', 'Rodrigo',
+  'Rogério', 'Rolando', 'Romeu', 'Rómulo', 'Rosa', 'Rosália', 'Rosalina', 'Rosário', 'Rúben',
+  'Rui', 'Rute', 'Sabina', 'Salomão', 'Salomé', 'Salvador', 'Samuel', 'Sandra', 'Sandro', 'Santiago',
+  'Sara', 'Sebastião', 'Selma', 'Serafim', 'Serena', 'Sérgio', 'Severino', 'Sílvia', 'Silvestre',
+  'Silvia', 'Silvino', 'Simão', 'Sira', 'Siro', 'Sofia', 'Solange', 'Sónia', 'Soraia', 'Stela',
+  'Susana', 'Tânia', 'Tasso', 'Tatiana', 'Telma', 'Telmo', 'Teodoro', 'Teófilo', 'Teresa', 'Tiago',
+  'Tibério', 'Tito', 'Tomás', 'Tristão', 'Urbano', 'Valdemar', 'Valentim', 'Valentina', 'Valeriana',
+  'Valeriano', 'Valério', 'Valter', 'Vanda', 'Vanessa', 'Vânia', 'Vasco', 'Venâncio', 'Vera',
+  'Vicente', 'Victor', 'Vidal', 'Virgílio', 'Virgínia', 'Viriato', 'Vital', 'Vítor', 'Vitória',
+  'Vitorino', 'Viviana', 'Xavier', 'Zélia', 'Zelinda', 'Zenaide', 'Zita', 'Zoe', 'Zulmira',
+  'aabirah', 'aabaj', 'aaditi', 'aagambir', 'aaira', 'aahan', 'aaish', 'aahil', 'aakriti', 'aankit', 'aalia', 'aarav', 'aaliya', 'aaravpreet', 'aaliyah', 'aaron', 'aalyiah', 'aarón', 'aamna', 'aarush', 'aarica', 'aaryan', 'aarohi', 'aasaal', 'aarushi', 'aayam', 'aarvi', 'aayan', 'aashvi', 'aayun',
+  'aatika', 'aayush', 'aayat', 'abd', 'aayushi', 'abdel', 'abby', 'abdelhadi', 'abbygaëlle', 'abdellah', 'abeedha', 'abdelrahman', 'abeeha', 'abderrahmane', 'abhinaya', 'abdoallah', 'abigael', 'abdoulaye', 'abigail', 'abdrahman', 'abimaela', 'abducadre', 'abrayene', 'abdul', 'abril', 'abdulai', 'abrish', 'abdulaí', 'acácia', 'abdullah', 'acakarein', 'abdulmuiz', 'achia', 'abdularahman', 'acricia', 'abdulwahab', 'açucena', 'abduramane', 'ada', 'abdurrahim', 'adalbmira', 'abel', 'adalgiza', 'abhay', 'adália', 'abhayjit', 'adama', 'abhinav', 'adan', 'abhinoor',
+  'adanna', 'abhiyan', 'addis', 'abibo', 'adel', 'abiel', 'adelaide', 'abilio', 'adele', 'abílio', 'adélia', 'abir', 'adelina', 'abner', 'adelle', 'abou', 'adely', 'aboubacar', 'adelyna', 'abraão', 'adeya', 'abraar', 'adiane', 'abraham', 'adília', 'abraim', 'aditi', 'abrão', 'adja', 'abrar', 'adje', 'absalão', 'adla', 'abubacar', 'adriana', 'acácio', 'adriane', 'adab', 'adrianna', 'adalberto', 'adriela', 'adam', 'adriele', 'adama', 'adrielle', 'adame', 'adrielly', 'adão', 'adriely', 'adarsh',
+  'adris', 'adaylton', 'adryelle', 'addison', 'adymara', 'áddison', 'afonsa', 'adeep', 'afonsina', 'adelin', 'áfrika', 'adelino', 'agashti', 'adélio', 'agata', 'adelmiro', 'ágata', 'adelson', 'agatha', 'adem', 'ágatha', 'aglaya', 'ademir', 'agnes', 'adenay', 'agnia', 'áder', 'águeda', 'adérito', 'aguinalda', 'ãdi', 'agustina', 'adiel', 'ahana', 'adil', 'ahinara', 'adilson', 'aicha', 'adnal', 'aida', 'adnan', 'aidin', 'adnav', 'aihra', 'adner', 'aíko', 'adney', 'aila', 'adolfo', 'ailine',
+  'adon', 'ailla', 'adonai', 'aimara', 'adonay', 'aimee', 'adonias', 'aina', 'adónis', 'ainara', 'adriaan', 'ainhoa', 'adrian', 'aini', 'adrián', 'ainny', 'adriano', 'ainoa', 'adrick', 'ainoah', 'adriel', 'aisha', 'adrien', 'aísha', 'ádrien', 'aishleen', 'adryan', 'aishwarya', 'adryán', 'aissa', 'adryel', 'aissatá', 'adulai', 'aissatou', 'ady', 'aïssatou', 'aécio', 'aissatu', 'aedan', 'aitana', 'aeric', 'aixa', 'afeef', 'aiyane', 'affaan', 'aiza', 'afidjo', 'aizah', 'afonso', 'ajwa',
+  'akari', 'akasha', 'akemi', 'akhil', 'akshara', 'akshat', 'akshaya', 'akshita', 'al', 'ala', 'alaa', 'alaba', 'aladin', 'aladino', 'alain', 'alair', 'alana', 'alan', 'alane', 'alani', 'alania', 'alanis', 'alanna', 'alano', 'alanya', 'alarico', 'alay', 'alaya', 'alayah', 'alayna', 'alba', 'alban', 'albana', 'albano', 'alberico', 'albert', 'alberta', 'albertha', 'alberti', 'albertina', 'albertino', 'alberto', 'albi', 'albina', 'albino', 'alcaide', 'alcântara', 'alceu', 'alci',
+  'alcibiades', 'alcides', 'alcina', 'alcindo', 'alcino', 'alcion', 'alcione', 'alcir', 'alda', 'aldair', 'aldara', 'aldemira', 'aldemiro', 'aldenir', 'aldenora', 'alder', 'aldérico', 'aldina', 'aldino', 'aldir', 'aldo', 'aldomiro', 'aldora', 'aleandro', 'alec', 'alecsander', 'alef', 'alefe', 'alegria', 'aleida', 'alejandra', 'alejandro', 'aleksander', 'aleksandra', 'alen', 'alena', 'alencar', 'alendra', 'alene', 'aleni', 'alenia', 'alenice', 'alenir', 'alenis', 'alenka', 'alenquer', 'alentina', 'alento', 'alenza', 'aleonor',
+  'aléscia', 'alesandra', 'alessandra', 'alessandro', 'alessia', 'aléssia', 'alessio', 'aléssio', 'alex', 'alexa', 'alexander', 'alexandra', 'alexandre', 'alexandrina', 'alexandrino', 'alexandro', 'alexia', 'aléxia', 'alexis', 'alexsander', 'alexsandra', 'alexsandre', 'alexsandro', 'aleya', 'alfaiate', 'alfaro', 'alfe', 'alfeu', 'alfia', 'alfie', 'alfio', 'alfons', 'alfonsa', 'alfonsina', 'alfonso', 'alfonz', 'alfred', 'alfreda', 'alfredo', 'alfrida', 'alfridi', 'alfrido', 'alga', 'algayer', 'algemira', 'algemiro', 'alhandra', 'ali', 'alia', 'alía',
+  'aliah', 'aliana', 'aliane', 'alianna', 'aliano', 'aliar', 'alias', 'aliat', 'aliaz', 'aliba', 'alibe', 'alibi', 'alibo', 'alice', 'alicia', 'alícia', 'alicio', 'alício', 'alida', 'alídia', 'alie', 'alif', 'alife', 'alika', 'alike', 'aliki', 'aliko', 'alila', 'alim', 'alima', 'alime', 'alimi', 'alimo', 'alin', 'alina', 'alinda', 'aline', 'alini', 'alino', 'aliny', 'alípio', 'alique', 'alira', 'alis', 'alisa', 'alise', 'alisha', 'alisia', 'alísia', 'alison',
+  'alisson', 'alister', 'alita', 'alito', 'aliu', 'alivia', 'alix', 'alixa', 'alixe', 'alixi', 'alixo', 'aliyah', 'aliyana', 'aliyane', 'aliz', 'aliza', 'alize', 'alizee', 'alizia', 'alízio', 'alizze', 'aljandira', 'aljandiro', 'aljara', 'aljare', 'aljari', 'aljaro', 'aljira', 'aljire', 'aljiri', 'aljiro', 'alju', 'aljure', 'aljuri', 'aljuro', 'alkis', 'all', 'alla', 'allah', 'allan', 'allana', 'allane', 'allani', 'allano', 'allany', 'allara', 'allare', 'allari', 'allaro',
+  'adange', 'adanis', 'adanson', 'adão', 'add', 'adega', 'adela', 'adelária', 'adelino', 'adelo', 'adérito', 'aderneiro', 'adida', 'adler', 'admans', 'adolfíno', 'adolfo', 'adónis', 'adopel', 'adosindo', 'adrêgo', 'adriano', 'adrião', 'adrod', 'aduenes', 'aduleiro', 'advento', 'advincula', 'aerschot', 'aeugeneyndt', 'afé', 'afecto', 'afenar', 'affable', 'afilhado', 'afira', 'aflalo', 'aflição', 'aflitos', 'afogado', 'afoito', 'aforeira', 'afortunato', 'afra', 'afragoas', 'afreixio', 'afreixo', 'afresco'
+].map(n => n.toLowerCase()));
+
+const COMMON_PT_SURNAMES = new Set([
+  'Silva', 'Santos', 'Ferreira', 'Pereira', 'Oliveira', 'Costa', 'Rodrigues', 'Martins', 'Jesus', 'Sousa',
+  'Fernandes', 'Gonçalves', 'Gomes', 'Lopes', 'Marques', 'Alves', 'Almeida', 'Ribeiro', 'Pinto', 'Carvalho',
+  'Teixeira', 'Moreira', 'Correia', 'Mendes', 'Nunes', 'Soares', 'Vieira', 'Monteiro', 'Cardoso', 'Rocha',
+  'Raposo', 'Neves', 'Coelho', 'Cruz', 'Machado', 'Pires', 'Afonso', 'Dias', 'Duarte', 'Freitas',
+  'Guerreiro', 'Henriques', 'Jorge', 'Leal', 'Leite', 'Lima', 'Maia', 'Melo', 'Miranda', 'Mota',
+  'Nascimento', 'Neto', 'Pacheco', 'Paiva', 'Passos', 'Reis', 'Resende', 'Sá', 'Sampaio', 'Sanches',
+  'Serrano', 'Simões', 'Tavares', 'Valente', 'Vaz', 'Vicente', 'Xavier', 'Brito', 'Cunha', 'Figueiredo',
+  'Fonseca', 'Guerra', 'Laranjeira', 'Magalhães', 'Matos', 'Nogueira', 'Pinheiro', 'Queirós', 'Ramalho',
+  'Sequeira', 'Valério', 'Abade', 'Abranches', 'Abrantes', 'Abreu', 'Agostinho', 'Aguiar', 'Aires',
+  'Albuquerque', 'Alcântara', 'Aleixo', 'Alexandre', 'Almada', 'Almeida', 'Alonço', 'Altamirano',
+  'Alvares', 'Alves', 'Alvim', 'Amado', 'Amaral', 'Amaro', 'Amorim', 'Andrade', 'Anes', 'Anjos',
+  'Antunes', 'Aragão', 'Araújo', 'Areias', 'Arrais', 'Arruda', 'Assis', 'Assunção', 'Azevedo',
+  'Bacelar', 'Badajoz', 'Baía', 'Bairros', 'Baldaia', 'Balsemão', 'Bandeira', 'Baptista', 'Barata',
+  'Barbedo', 'Barbosa', 'Barcelos', 'Barreiros', 'Barreto', 'Barros', 'Barroso', 'Bastos', 'Batista',
+  'Beça', 'Belchior', 'Belo', 'Beltrão', 'Bencatel', 'Bento', 'Bernardes', 'Bessa', 'Bettencourt',
+  'Bezerra', 'Bicudo', 'Bivar', 'Boaventura', 'Botelho', 'Braga', 'Bragança', 'Brandão', 'Branco',
+  'Brites', 'Brito', 'Brum', 'Bulhão', 'Cabral', 'Cabreira', 'Cacho', 'Cachopo', 'Cadaval', 'Caetano',
+  'Caiado', 'Caires', 'Caldas', 'Caldeira', 'Calado', 'Camacho', 'Câmara', 'Camelo', 'Caminha',
+  'Camões', 'Campelo', 'Campos', 'Canário', 'Candeias', 'Canedo', 'Cano', 'Cansado', 'Canto',
+  'Capelo', 'Cardoso', 'Cardoso', 'Carlos', 'Carneiro', 'Carrascalão', 'Carreira', 'Carreiro',
+  'Carrilho', 'Cartaxo', 'Carvalhal', 'Carvalho', 'Casado', 'Casal', 'Cascais', 'Castanheira',
+  'Castelo', 'Castelo Branco', 'Castilho', 'Castro', 'Catela', 'Cavaco', 'Cavaleiro', 'Cerveira',
+  'Chagas', 'Chaves', 'Cid', 'Cipriano', 'Claro', 'Clemente', 'Coelho', 'Coimbra', 'Colares',
+  'Conceição', 'Conde', 'Cordeiro', 'Coronel', 'Correa', 'Correia', 'Corte-Real', 'Cortês', 'Costa',
+  'Coutinho', 'Couto', 'Crespo', 'Cristóvão', 'Cruz', 'Cunha', 'Curado', 'Custódio', 'Damas',
+  'Dâmaso', 'Dantas', 'Dantas', 'Delgado', 'Dinis', 'Diniz', 'Duarte', 'Eanes', 'Eiró', 'Encarnação',
+  'Esteves', 'Evangelista', 'Fagundes', 'Faria', 'Farinha', 'Faro', 'Faustino', 'Feijó', 'Feio',
+  'Felgueiras', 'Feliciano', 'Félix', 'Fernandes', 'Ferrão', 'Ferraz', 'Ferreira', 'Ferro', 'Fialho',
+  'Fidalgo', 'Figueira', 'Figueiredo', 'Figueiró', 'Filipe', 'Fitas', 'Fogaça', 'Folque', 'Fonseca',
+  'Fontes', 'Fortunato', 'Fraga', 'Fragoso', 'Fraisão', 'França', 'Franco', 'Freire', 'Freitas',
+  'Frois', 'Furtado', 'Galvão', 'Gama', 'Gameiro', 'Garção', 'Garcia', 'Garrido', 'Gaspar', 'Gentil',
+  'Gil', 'Girão', 'Godinho', 'Góis', 'Gomes', 'Gonçalves', 'Gouveia', 'Graça', 'Gramacho', 'Granjo',
+  'Guedes', 'Guerra', 'Guerreiro', 'Guimarães', 'Gusmão', 'Henriques', 'Hipólito', 'Holbeche',
+  'Homem', 'Horta', 'Iglésias', 'Inácio', 'Iria', 'Isidoro', 'Jacinto', 'Janes', 'Jardim', 'Jesus',
+  'Joanes', 'Jorge', 'Jordão', 'Júlio', 'Junqueria', 'Lacerda', 'Ladeira', 'Lagos', 'Lamego',
+  'Lameira', 'Lança', 'Landim', 'Laranjeira', 'Larcher', 'Leal', 'Leão', 'Leite', 'Leitão', 'Leme',
+  'Lemos', 'Lencastre', 'Leonídio', 'Lima', 'Lira', 'Lisboa', 'Lobato', 'Lobo', 'Lopes', 'Lopo',
+  'Loureiro', 'Lourenço', 'Lousada', 'Lucena', 'Luís', 'Luz', 'Macedo', 'Machado', 'Maciel',
+  'Madureira', 'Magalhães', 'Magro', 'Maia', 'Mainato', 'Malaquias', 'Malheiro', 'Malta', 'Mamede',
+  'Mâncio', 'Manteigas', 'Mântua', 'Manuel', 'Mariz', 'Marques', 'Martins', 'Mascarenhas', 'Mata',
+  'Matos', 'Medeiros', 'Meira', 'Meireles', 'Melancia', 'Mello', 'Melo', 'Mendes', 'Mendonça',
+  'Menezes', 'Mesquita', 'Mexia', 'Miranda', 'Moita', 'Moleiro', 'Moniz', 'Montenegro', 'Monteiro',
+  'Morais', 'Moreira', 'Morgado', 'Mota', 'Moura', 'Mourão', 'Moutinho', 'Muniz', 'Murtinho',
+  'Nascimento', 'Navarro', 'Naves', 'Negrão', 'Negreiros', 'Neto', 'Neves', 'Nobre', 'Nóbrega',
+  'Nogueira', 'Nogueira', 'Noronha', 'Novaes', 'Novais', 'Nunes', 'Ó', 'Oliveira', 'Onofre',
+  'Ornelas', 'Osório', 'Ourique', 'Outeiro', 'Pacheco', 'Padilha', 'Padrão', 'Paes', 'Paiva',
+  'Paixão', 'Palha', 'Palma', 'Palmeira', 'Pamplona', 'Pantaleão', 'Panteleão', 'Paranhos', 'Pardo',
+  'Paredes', 'Parreira', 'Passos', 'Pastana', 'Pato', 'Patrício', 'Paula', 'Paulino', 'Paz',
+  'Peçanha', 'Pêra', 'Pedrosa', 'Pedroso', 'Peixoto', 'Pena', 'Penha', 'Penteado', 'Peralta',
+  'Perdigão', 'Pereira', 'Peres', 'Pessoa', 'Pestana', 'Picanço', 'Picado', 'Pimenta', 'Pimentel',
+  'Pinheiro', 'Pinho', 'Pinto', 'Pires', 'Pisco', 'Pissarra', 'Pita', 'Pizarro', 'Poças', 'Póvoas',
+  'Pontes', 'Portela', 'Porto', 'Portugal', 'Prado', 'Prata', 'Prates', 'Prego', 'Preto', 'Pronto',
+  'Proença', 'Prudêncio', 'Quaresma', 'Queirós', 'Queiroz', 'Quental', 'Quinteiro', 'Quintino',
+  'Quirino', 'Rabelo', 'Radaquisto', 'Ramalho', 'Ramires', 'Ramos', 'Rangel', 'Raposo', 'Rato',
+  'Real', 'Rebelo', 'Rebocho', 'Rego', 'Regueira', 'Reis', 'Relvas', 'Resende', 'Ribeiro', 'Rico',
+  'Rios', 'Rocha', 'Rodrigues', 'Rolim', 'Romão', 'Rosa', 'Rosado', 'Rosário', 'Sá', 'Sabrosa',
+  'Sacramento', 'Saldanha', 'Sales', 'Salgado', 'Salgueiro', 'Salomão', 'Salter', 'Salvado',
+  'Sampaio', 'Sanches', 'Santana', 'Santarém', 'Santiago', 'Santos', 'Saraiva', 'Sardinha',
+  'Sarmento', 'Seabra', 'Seco', 'Segurado', 'Seixas', 'Semedo', 'Sequeira', 'Serpa', 'Serrão',
+  'Serrano', 'Sertório', 'Sesinando', 'Severo', 'Silva', 'Silveira', 'Silvestre', 'Simas', 'Simões',
+  'Sintra', 'Siqueira', 'Soares', 'Sobral', 'Sobreira', 'Sobrinho', 'Solano', 'Sotto-Mayor', 'Sousa',
+  'Souto', 'Souto-Maior', 'Spínola', 'Tavares', 'Taveira', 'Teixeira', 'Teles', 'Temudo', 'Teodoro',
+  'Terra', 'Teves', 'Tojal', 'Toledo', 'Tolentino', 'Torres', 'Toscano', 'Toste', 'Trancoso',
+  'Trigueiros', 'Trindade', 'Uchoa', 'Urbano', 'Valadares', 'Valadão', 'Valença', 'Valente',
+  'Valentim', 'Vale', 'Valério', 'Valido', 'Varela', 'Vargas', 'Vasconcelos', 'Vasques', 'Vaz',
+  'Veiga', 'Velasques', 'Veloso', 'Venda', 'Ventura', 'Vera-Cruz', 'Viana', 'Vicente', 'Vidal',
+  'Viegas', 'Vieira', 'Vila-Lobos', 'Vilar', 'Vilhena', 'Vinhola', 'Vinhas', 'Viveiros', 'Xavier',
+  'Ximenes', 'Zarco',
+  'freitas', 'magalhães', 'henriques', 'lima', 'guerreiro', 'batista', 'pinheiro', 'faria', 'miranda', 'barros', 'morais', 'nogueira', 'esteves', 'anjos', 'baptista', 'campos', 'mota', 'andrade', 'brito', 'sá', 'nascimento', 'leite', 'abreu', 'borges', 'melo', 'vaz', 'pinho', 'vicente', 'gaspar', 'assunção', 'maia', 'moura', 'valente', 'domingues', 'garcia', 'carneiro', 'loureiro', 'neto', 'amaral', 'branco', 'leal', 'pacheco', 'macedo', 'paiva', 'matias', 'amorim', 'torres', 'adães', 'adorno', 'aguiar',
+  'albuquerque', 'alcântara', 'aleluia', 'alencar', 'altamirano', 'alvarenga', 'álvares', 'alvim', 'amigo', 'amor', 'anchieta', 'andrada', 'andré', 'anes', 'antônio', 'anunciação', 'apolinário', 'aragão', 'arruda', 'ascensão', 'assis', 'azeredo', 'bandeira', 'barroso', 'bastos', 'benjamin', 'bermudes', 'bernades', 'bernadino', 'bernardes', 'bernardino', 'bicalho', 'bispo', 'bocaiuva', 'bolsonaro', 'borba', 'borborema', 'botelho', 'braga', 'bragança', 'brasil', 'brasiliense', 'bruno', 'bueno', 'cabral', 'caldas', 'camacho', 'camargo', 'caminha', 'camões',
+  'cândido', 'carmo', 'carnaval', 'carvalhal', 'carvalhosa', 'castilho', 'cavalcante', 'chaves', 'coimbra', 'conceição', 'constante', 'cordeiro', 'cotrim', 'coutinho', 'couto', 'curado', 'dambros', 'delfino', 'dias', 'dorneles', 'dourado', 'duarte', 'dutra', 'encarnação', 'evangelista', 'exaltação', 'fagundes', 'falópio', 'falqueto', 'faro', 'figueira', 'fioravante', 'flores', 'fortaleza', 'fracasso', 'frança', 'freire', 'frota', 'furquim', 'furtado', 'gaia', 'galvão', 'gama', 'garrastazu', 'gato', 'generoso', 'gonzaga', 'gouveia', 'guimarães', 'hernandes',
+  'holanda', 'homem', 'hora', 'hungria', 'inácio', 'jardim', 'jordão', 'junqueira', 'lacerda', 'lange', 'leitão', 'leme', 'lins', 'lira', 'lisboa', 'luz', 'madureira', 'maduro', 'mairinque', 'malafaia', 'malta', 'marins', 'mascarenhas', 'maurício', 'medeiros', 'médici', 'mendonça', 'menino', 'mesquita', 'messias', 'mioto', 'montenegro', 'moraes', 'morato', 'moro', 'namorado', 'nantes', 'nóbrega', 'noronha', 'oliva', 'padrão', 'paiva', 'paixão', 'papanicolau', 'pascal', 'pascoal', 'patriota', 'peçanha', 'pedrosa', 'pedroso',
+  'pensamento', 'penteado', 'peres', 'pessoa', 'pestana', 'pimenta', 'pimentel', 'poeta', 'porto', 'portugal', 'prado', 'prudente', 'peixoto', 'quaresma', 'queiroz', 'ramalhete', 'ramalho', 'ramires', 'rangel', 'rebouças', 'resende', 'roma', 'romão', 'sacramento', 'sales', 'sampaio', 'sampaulo', 'sampedro', 'santacruz', 'santana', 'santander', 'santarrosa', 'santiago', 'saragoça', 'saraiva', 'saramago', 'seixas', 'serra', 'serrano', 'silveira', 'silvério', 'siqueira', 'souza', 'tales', 'teles', 'toledo', 'torquato', 'trindade', 'uchoa', 'uribe',
+  'ustra', 'valadares', 'valença', 'valpaços', 'varela', 'vargem', 'vasconcelos', 'veiga', 'veloso', 'veras', 'viana', 'vidal', 'vilhena', 'xavier', 'zampol', 'abaças', 'abacer', 'abade', 'abadeço', 'abadesso', 'abadia', 'abadito', 'abafa', 'abagim', 'abal', 'abalada', 'abalamatos', 'abalde', 'aballi', 'abalo', 'abalroado', 'abana', 'abaraão', 'abarca', 'abascal', 'abavadilha', 'abberasitari', 'abbo', 'abdoulprah', 'abecassis', 'abegão', 'abeijón', 'abel', 'abela', 'abelenda', 'abelha', 'abelhas', 'abelheira', 'abelhi', 'abelho', 'afoito'
+].map(s => s.toLowerCase()));
+
+// Nomes que também são palavras comuns (exigem verificação de contexto)
+const AMBIGUOUS_PT_NAMES = new Set([
+  'pereira', 'afoito', 'rosa', 'serra', 'costa', 'oliveira', 'machado', 'coelho', 'pinto', 'leite', 'maia', 'melo', 'mota', 'neto', 'paiva', 'reis', 'vaz', 'brito', 'cunha', 'guerra', 'matos', 'pinheiro', 'ramalho', 'sequeira', 'abade', 'aguiar', 'aires', 'amado', 'amaral', 'amaro', 'anjos', 'arrais', 'assis', 'azevedo', 'baia', 'bandeira', 'barata', 'barros', 'bastos', 'belo', 'bento', 'bessa', 'bezerra', 'branco', 'brites', 'cabral', 'cacho', 'caldas', 'camacho', 'camara', 'camelo', 'campos', 'canario', 'cano', 'canto', 'capelo', 'carneiro', 'casado', 'casal', 'castro', 'catela', 'chaves', 'cid', 'claro', 'conde', 'coronel', 'crespo', 'cruz', 'curado', 'damas', 'delgado', 'dinis', 'eanes', 'faria', 'farinha', 'faro', 'feio', 'felix', 'ferrao', 'ferro', 'fialho', 'figueira', 'fitas', 'fogaca', 'fontes', 'fraga', 'franca', 'franco', 'freire', 'frois', 'gama', 'garcao', 'garrido', 'girao', 'graca', 'guedes', 'guerreiro', 'homem', 'horta', 'jardim', 'jesus', 'lacerda', 'ladeira', 'lagos', 'lanca', 'leal', 'leao', 'leme', 'lisboa', 'lobo', 'luz', 'magro', 'malta', 'manteigas', 'mariz', 'mata', 'mello', 'mesquita', 'moita', 'moleiro', 'morgado', 'moura', 'mourao', 'nobre', 'novais', 'outeiro', 'padrao', 'paixao', 'palha', 'palma', 'palmeira', 'pardo', 'paredes', 'parreira', 'passos', 'pato', 'paz', 'pena', 'penha', 'pimentel', 'pinho', 'pisco', 'pizarro', 'pocas', 'pontes', 'porto', 'portugal', 'prado', 'prata', 'prego', 'preto', 'pronto', 'rego', 'relvas', 'rico', 'rios', 'rocha', 'rosado', 'rosario', 'sa', 'sales', 'salgado', 'salgueiro', 'salvado', 'santana', 'sardinha', 'seco', 'serpa', 'serrao', 'serrano', 'severo', 'silva', 'silvestre', 'simas', 'sobral', 'sobreira', 'sobrinho', 'solano', 'sousa', 'souto', 'terra', 'toledo', 'torres', 'toscano', 'toste', 'trindade', 'urbano', 'vale', 'valido', 'varela', 'vargas', 'veiga', 'veloso', 'venda', 'ventura', 'viana', 'vidal', 'vieira', 'vilar', 'vinhas'
+].map(n => n.toLowerCase()));
 
 // Lista de exceções globais padrão
 const DEFAULT_GLOBAL_EXCEPTIONS = [
@@ -64,7 +219,52 @@ const DEFAULT_GLOBAL_EXCEPTIONS = [
   'pelo exposto', 'em conformidade', 'nos termos do artigo', 'codigo de processo civil',
   'supremo tribunal de justiça', 'juízo de instrução', 'tribunal da relacao',
   'conforme o disposto', 'nestes termos', 'pede deferimento', 'valor da causa',
-  'custas de parte', 'procuradoria', 'taxa de justiça', 'apoio judiciário'
+  'custas de parte', 'procuradoria', 'taxa de justiça', 'apoio judiciário',
+  'acordo e documentos', 'administrativo e fiscal', 'afirmou que foi celebrado',
+  'apelações', 'após ser-lhe deferido', 'prorrogação de prazo',
+  'assembleia geral', 'assembleia geral da', 'assembleia geral da liga',
+  'associação vilanovense', 'pedido de prorrogação', 'para o fazer',
+  'Transportes Internacionais Rodoviários', 'concluindo deverem improceder os pedidos do',
+  'passou a exercer funções de', 'pagar ao Autor as seguintes quantias',
+  'exercer funções de', 'seguintes quantias', 'improceder os pedidos',
+  'deverem improceder', 'pagar ao Autor', 'Transportes Internacionais',
+  'concluindo deverem', 'passou a exercer', 'funções de', 'seguintes quantias',
+  'foi celebrado', 'nos autos', 'em causa', 'no caso', 'de facto', 'de direito',
+  'Recursos Humanos', 'Departamento', 'Direção', 'Serviços', 'Fábrica', 'Unidade',
+  'Administração', 'Conselho', 'Gerência', 'Secretaria', 'Gabinete', 'Secção',
+  'Superior', 'Hierárquico', 'Inferior', 'Colega', 'Trabalhador', 'Funcionário',
+  'Colaborador', 'Pessoa', 'Indivíduo', 'Sujeito', 'Cidadão', 'Residente',
+  'Morada', 'Rua', 'Avenida', 'Praça', 'Largo', 'Estrada', 'Caminho', 'Beco',
+  'Travessa', 'Edifício', 'Prédio', 'Andar', 'Piso', 'Apartamento', 'Fração',
+  'Código Postal', 'Localidade', 'Freguesia', 'Concelho', 'Distrito', 'País',
+  'Nacionalidade', 'Naturalidade', 'Estado Civil', 'Profissão', 'Habilitações',
+  'Contrato', 'Cláusula', 'Anexo', 'Documento', 'Cópia', 'Original', 'Certidão',
+  'Registo', 'Notário', 'Conservatória', 'Finanças', 'Segurança Social',
+  'Saúde', 'Hospital', 'Centro de Saúde', 'Médico', 'Enfermeiro', 'Paciente',
+  'Doença', 'Exame', 'Receita', 'Tratamento', 'Internamento', 'Alta',
+  'os', 'as', 'um', 'uma', 'uns', 'umas', 'em', 'no', 'na', 'nos', 'nas',
+  'ao', 'à', 'aos', 'às', 'de', 'do', 'da', 'dos', 'das', 'por', 'pelo', 'pela',
+  'pelos', 'pelas', 'com', 'sem', 'sob', 'sobre', 'ante', 'após', 'até',
+  'desde', 'entre', 'para', 'perante', 'segundo', 'trás', 'atrás', 'dentro',
+  'fora', 'cima', 'baixo', 'frente', 'lado', 'meio', 'fim', 'início', 'meio',
+  'qual', 'quais', 'quem', 'cujo', 'cuja', 'cujos', 'cujas', 'onde', 'como',
+  'quando', 'quanto', 'quanta', 'quantos', 'quantas', 'cada', 'todo', 'toda',
+  'todos', 'todas', 'algum', 'alguma', 'alguns', 'algumas', 'nenhum', 'nenhuma',
+  'outro', 'outra', 'outros', 'outras', 'mesmo', 'mesma', 'mesmos', 'mesmas',
+  'tal', 'tais', 'tanto', 'tanta', 'tantos', 'tantas', 'vários', 'várias',
+  'muito', 'muita', 'muitos', 'muitas', 'pouco', 'pouca', 'poucos', 'poucas',
+  'mais', 'menos', 'tão', 'quão', 'bastante', 'demais', 'quase', 'apenas',
+  'só', 'somente', 'inclusive', 'exclusivamente', 'principalmente', 'especialmente',
+  'também', 'ainda', 'já', 'agora', 'logo', 'cedo', 'tarde', 'sempre', 'nunca',
+  'jamais', 'talvez', 'provavelmente', 'certamente', 'realmente', 'efetivamente',
+  'sim', 'não', 'nem', 'ou', 'mas', 'porém', 'todavia', 'contudo', 'entretanto',
+  'logo', 'pois', 'porque', 'visto que', 'já que', 'uma vez que', 'porquanto',
+  'conforme', 'segundo', 'consoante', 'embora', 'conquanto', 'ainda que',
+  'mesmo que', 'se', 'caso', 'desde que', 'contanto que', 'a menos que',
+  'a não ser que', 'para que', 'a fim de que', 'de modo que', 'de sorte que',
+  'tanto que', 'tão que', 'como', 'assim como', 'bem como', 'mais que', 'menos que',
+  'decorre', 'concordando', 'finalmente', 'começo', 'ficar', 'vender', 'produtos', 'clientes', 'pagou',
+  'despesas', 'apresentadas', 'obrigada', 'reembolsá-las', 'comunicou', 'intenção', 'resolução'
 ];
 
 const ENTITY_BLACKLIST = [
@@ -99,7 +299,10 @@ const ENTITY_BLACKLIST = [
   'TERMOS EM QUE', 'RECURSO DE APELACAO', 'TERMO E DURACAO', 'PARTES DE CIMA', 'PARTES DE BAIXO',
   'FAMILIA DE TRICOTADOS', 'FAMILIA DOS TRICOTADOS', 'RUA FERNAO MAGALHAES',
   'PELO EXPOSTO', 'EM CONFORMIDADE', 'NOS TERMOS DO ARTIGO', 'CODIGO DE PROCESSO CIVIL',
-  'NESTES TERMOS', 'PEDE DEFERIMENTO', 'VALOR DA CAUSA', 'TAXA DE JUSTICA'
+  'NESTES TERMOS', 'PEDE DEFERIMENTO', 'VALOR DA CAUSA', 'TAXA DE JUSTICA',
+  'ACORDO', 'DOCUMENTOS', 'ADMINISTRATIVO', 'FISCAL', 'CELEBRADO', 'APELACOES',
+  'PRORROGACAO', 'PRAZO', 'ASSEMBLEIA', 'GERAL', 'LIGA', 'ASSOCIACAO', 'VILANOVENSE',
+  'PEDIDO', 'DEFERIDO', 'FAZER', 'AUTOS', 'CAUSA', 'CASO', 'FACTO', 'DIREITO'
 ];
 
 const PII_PATTERNS = {
@@ -114,14 +317,14 @@ const PII_PATTERNS = {
   AUTOR: /\bAutor(?:\(a\))?\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
   ADVOGADO: /\b(?:Advogado|Advogada|Mandatário|Mandatária)\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
   // More aggressive name patterns for Portuguese - updated to handle internal spaces like "F erreira"
-  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Autora|Réu|Ré|Mandatário|Advogado|Advogada|Recorrente|Recorrido)(?:,\s*|\s+)([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))+)/g,
+  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Autora|Réu|Ré|Mandatário|Advogado|Advogada|Recorrente|Recorrido)(?:,\s*|\s+)([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
   NOME_CAPS: /\b([A-ZÀ-Ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e|DE|DA|DO|DOS|DAS|E)\s+[A-ZÀ-Ÿ]{2,}|\s+[A-ZÀ-Ÿ]{2,}){1,8})\b/g,
   // Generic sequence of capitalized words (2 or more) - updated to handle internal spaces
-  NOME_GENERIC: /\b([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){1,8})\b/g,
+  NOME_GENERIC: /\b([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){0,8})\b/g,
   // Pattern for names with "e" in the middle (often two people)
   NOME_AND: /\b([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*\s+e\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)\b/g,
   // Legal context patterns
-  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à|recorrente|recorrido)(?:,\s*|\s+)([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){1,8})/g,
+  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à|recorrente|recorrido)(?:,\s*|\s+)([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){0,8})/g,
   COLETIVA: /\b(?:Associação|Fundação|Cooperativa|Sociedade|Empresa|Escola|Faculdade|Universidade|Instituto|Centro|Agrupamento|Sindicato|Banco|Seguradora|Companhia|Câmara|Junta|Assembleia|Governo|Estado|República|Ministério|Tribunal|Conselho|Direção|Serviço|Autoridade|Comissão|Unidade|Núcleo|Agência)\s+([A-ZÀ-ÿ][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+|\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+){1,8})\b|\b([A-ZÀ-ÿ][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+|\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+){0,8})\s+(?:Lda\.?|Limitada|S\.A\.?|Sociedade\s+Anónima|Unipessoal|S\.?C\.?P\.?|S\.?P\.?Q\.?)\b/g,
 };
 
@@ -296,6 +499,141 @@ export interface Safelist {
   phrases_ignore: string[];
 }
 
+const NON_NAME_INDICATORS = [
+  'transportes', 'internacionais', 'rodoviários', 'concluindo', 'deverem', 'improceder', 
+  'pedidos', 'passou', 'exercer', 'funções', 'pagar', 'seguintes', 'quantias',
+  'processo', 'tribunal', 'relação', 'supremo', 'justiça', 'artigo', 'número',
+  'data', 'hora', 'local', 'sede', 'empresa', 'sociedade', 'geral', 'assembleia',
+  'conforme', 'disposto', 'termos', 'pede', 'deferimento', 'valor', 'causa',
+  'custas', 'taxa', 'apoio', 'judiciário', 'acordo', 'documentos', 'celebrado',
+  'apelações', 'prazo', 'fazer', 'autos', 'facto', 'direito', 'visto', 'identificado',
+  'registada', 'notificado', 'citado', 'ofício', 'mandado', 'execução', 'penhora',
+  'recorrente', 'recorrido', 'autor', 'réu', 'requerente', 'requerido', 'apelante', 'apelado',
+  'oposição', 'embargos', 'executado', 'exequente', 'testemunha', 'perito', 'escrivão',
+  'conclui', 'decide', 'julga', 'improcedente', 'procedente', 'parcialmente', 'absolve', 
+  'condena', 'recurso', 'apelação', 'revista', 'agravo', 'reclamação', 'contestação', 
+  'réplica', 'tréplica', 'alegações', 'conclusões', 'fundamentos', 'factos', 'provados', 
+  'aplicável', 'decisão', 'final', 'vistos', 'examinados', 'relatados', 'discutidos',
+  'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro',
+  'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado', 'domingo',
+  'agravamento', 'patologia', 'anca', 'direita', 'consequência', 'direta', 'lesão', 'bacia', 'provocada', 'pelo', 'pela', 'at', 'de', 'do', 'da', 'dos', 'das',
+  'clínico', 'médico', 'hospital', 'saúde', 'exame', 'diagnóstico', 'tratamento', 'sintomas', 'doença', 'lesões', 'ferimentos', 'acidente', 'trabalho',
+  'comunicou', 'caducidade', 'detrimento', 'indemnização', 'vestuário', 'perspetivando', 'cofemel', 'sociedade', 'empresa', 'marca', 'modelo', 'desenho',
+  'propriedade', 'intelectual', 'industrial', 'direitos', 'autor', 'obra', 'original', 'criação', 'proteção', 'âmbito', 'aplicação', 'diretiva', 'regulamento',
+  'acórdão', 'sentença', 'decisão', 'fundamentação', 'factos', 'provados', 'não', 'provados', 'direito', 'aplicável', 'dispositivo', 'custas', 'valor', 'causa',
+  'recurso', 'apelação', 'revista', 'agravo', 'reclamação', 'oposição', 'embargos', 'execução', 'penhora', 'citação', 'notificação', 'prazo', 'requerimento',
+  'automóveis', 'automóvel', 'veículo', 'viatura', 'estrada', 'trânsito', 'condução', 'carta', 'seguro', 'apólice', 'sinistro',
+  'pagar', 'receber', 'entregar', 'liquidar', 'vencer', 'vencimento', 'juros', 'mora', 'legal', 'capital', 'quantia', 'montante',
+  'reintegrar', 'reintegração', 'restituir', 'restituição', 'indemnizar', 'compensar', 'reparar', 'danos', 'prejuízos',
+  'lda', 'ld', 'sa', 'unipessoal', 'limitada', 'sociedade', 'gerência', 'administração', 'direção', 'conselho', 'fiscal',
+  'comunicar', 'notificar', 'citar', 'informar', 'esclarecer', 'declarar', 'atestar', 'certificar', 'confirmar'
+];
+
+function calculateNameScore(
+  text: string, 
+  type: string, 
+  contextBefore: string, 
+  contextAfter: string, 
+  repetitionCount: number
+): number {
+  let score = 0;
+  const norm = normalizeText(text);
+  const allWords = norm.split(/\s+/).filter(w => w.length > 0);
+  const trimmed = text.trim();
+  
+  // 0. Check for verbs (common endings in Portuguese)
+  // Added infinitive endings: ar, er, ir
+  const verbEndings = ['ando', 'endo', 'indo', 'aram', 'eram', 'iram', 'ou', 'amos', 'emos', 'imos', 'ará', 'erá', 'irá', 'ar', 'er', 'ir'];
+  const hasVerbEnding = allWords.some(w => {
+    const low = w.toLowerCase();
+    // Only check if it's not a common name (e.g., "Aguiar" ends in "ar" but is a name)
+    return low.length > 4 && verbEndings.some(e => low.endsWith(e)) && !COMMON_PT_FIRST_NAMES.has(low) && !COMMON_PT_SURNAMES.has(low);
+  });
+  if (hasVerbEnding) score -= 8; // Increased penalty
+
+  // 0.1 Check for common abbreviations that are not names
+  const commonAbbr = ['ld', 'lda', 'sa', 'nº', 'n.º', 'art', 'art.º', 'pág', 'fls', 'doc'];
+  if (allWords.some(w => commonAbbr.includes(w.toLowerCase()))) score -= 10;
+
+  // 1. Positive triggers in contextBefore
+  const positiveTriggers = ['nome', 'requerente', 'réu', 'ré', 'autor', 'autora', 'mandatário', 'mandatária', 'dr.', 'dra.', 'sr.', 'sra.', 'exmo.', 'exma.'];
+  const contextLower = contextBefore.toLowerCase();
+  if (positiveTriggers.some(t => contextLower.includes(t))) {
+    score += 4;
+  }
+
+  // 2. Dictionary matches
+  let dictionaryMatches = 0;
+  allWords.forEach(word => {
+    const w = word.toLowerCase();
+    if (COMMON_PT_FIRST_NAMES.has(w) || COMMON_PT_SURNAMES.has(w)) {
+      dictionaryMatches++;
+    }
+  });
+  
+  const matchRatio = dictionaryMatches / allWords.length;
+  
+  if (dictionaryMatches >= 2) {
+    score += 4;
+    if (matchRatio > 0.6) score += 2;
+  } else if (dictionaryMatches === 1) {
+    score += 1;
+  } else {
+    score -= 6; // Increased penalty for zero dictionary matches
+  }
+
+  // 3. Repetition
+  if (repetitionCount >= 3) score += 2;
+  else if (repetitionCount === 2) score += 1;
+
+  // 4. Negative indicators (Institutional/Medical/Legal terms)
+  const foundNegativeIndicators = allWords.filter(w => NON_NAME_INDICATORS.includes(w.toLowerCase()));
+  if (foundNegativeIndicators.length > 0) {
+    score -= (6 * foundNegativeIndicators.length); // Increased penalty per indicator
+  }
+
+  // 5. Address/Postal code context
+  const addressTriggers = ['rua', 'avenida', 'praça', 'largo', 'estrada', 'caminho', 'beco', 'travessa', 'n.º', 'nº', 'código postal', 'cp'];
+  const contextAfterLower = contextAfter.toLowerCase();
+  if (addressTriggers.some(t => contextLower.includes(t) || contextAfterLower.includes(t))) {
+    score -= 4;
+  }
+
+  // 6. All-caps penalty
+  const isAllCaps = trimmed === trimmed.toUpperCase() && trimmed.length > 5;
+  if (isAllCaps) {
+    if (dictionaryMatches === 0) score -= 10; // Even heavier penalty
+    else if (matchRatio < 0.5) score -= 5;
+  }
+
+  // 7. Length penalty
+  if (allWords.length === 1 && dictionaryMatches === 0) score -= 8;
+  if (allWords.length > 5) score -= 5;
+  if (allWords.length > 8) score -= 10;
+
+  // 8. Start/End with prepositions/conjunctions/verbs
+  const connectors = ['de', 'do', 'da', 'dos', 'das', 'e', 'com', 'contra', 'pelo', 'pela', 'ao', 'à', 'em', 'por', 'para', 'o', 'a', 'os', 'as'];
+  if (connectors.includes(allWords[0]?.toLowerCase())) score -= 5;
+  if (connectors.includes(allWords[allWords.length - 1]?.toLowerCase())) score -= 5;
+
+  // 9. Lowercase start (if not a connector)
+  if (trimmed[0] === trimmed[0].toLowerCase() && !connectors.includes(allWords[0]?.toLowerCase())) {
+    score -= 6;
+  }
+
+  // 10. Ambiguous name check (e.g., "Afoito" or "Pereira" alone)
+  if (allWords.length === 1 && AMBIGUOUS_PT_NAMES.has(allWords[0].toLowerCase())) {
+    // Only penalize if it doesn't have a title context
+    const contextLower = contextBefore.toLowerCase();
+    const titles = ['dr.', 'dra.', 'sr.', 'sra.', 'exmo.', 'exma.', 'juiz', 'autor', 'réu'];
+    if (!titles.some(t => contextLower.includes(t))) {
+      score -= 5;
+    }
+  }
+
+  return score;
+}
+
 export function scanText(
   text: string, 
   fileId: string, 
@@ -380,6 +718,8 @@ export function scanText(
     }
 
     // Caso especial: Se for um nome composto (ex: "I. Pelos"), verificar se a parte principal é exceção
+    // REMOVIDO: Era demasiado agressivo e ignorava nomes válidos que continham palavras comuns (ex: "António Lisboa")
+    /*
     if (snorm.length > 3) {
       const parts = matchText.split(/[\s,.]+/).filter(p => p.length > 2);
       
@@ -394,6 +734,7 @@ export function scanText(
         if (superNormalizedExceptions.has(sp)) return true;
       }
     }
+    */
 
     return false;
   };
@@ -446,10 +787,10 @@ export function scanText(
       }
     });
 
-  // 2. Portuguese Legal Patterns (Parties)
+  // 2. Portuguese Legal Patterns (Parties) - Updated to require capitalization for names
   const legalPatterns = [
-    /(?:Recorrente|Recorrido|Requerente|Requerido|Réu|Ré|Autor|Autora|Participante|Denunciado|Arguido|Assistente|Beneficiário|Executado|Exequente|Oponente|Reclamante|Reclamado|Interveniente|Contrainteressado|Apelante|Apelado|Agravante|Agravado|Embargante|Embargado|Demandante|Demandado|Advogado|Advogada|Mandatário|Mandatária)(?::|,\s*|\s+)\s*([^,.;\n]+)/gi,
-    /(?:Nome|Apelido|Filiação|Naturalidade|Residência|Sede)(?::|,\s*|\s+)\s*([^,.;\n]+)/gi,
+    /(?:Recorrente|Recorrido|Requerente|Requerido|Réu|Ré|Autor|Autora|Participante|Denunciado|Arguido|Assistente|Beneficiário|Executado|Exequente|Oponente|Reclamante|Reclamado|Interveniente|Contrainteressado|Apelante|Apelado|Agravante|Agravado|Embargante|Embargado|Demandante|Demandado|Advogado|Advogada|Mandatário|Mandatária)(?::|,\s*|\s+)\s*([A-ZÀ-Ÿ][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-Ÿ][a-zÀ-ÿ]+|\s+[A-ZÀ-Ÿ][a-zÀ-ÿ]+){0,6})/g,
+    /(?:Nome|Apelido|Filiação|Naturalidade|Residência|Sede)(?::|,\s*|\s+)\s*([A-ZÀ-Ÿ][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-Ÿ][a-zÀ-ÿ]+|\s+[A-ZÀ-Ÿ][a-zÀ-ÿ]+){0,6})/g,
   ];
 
   legalPatterns.forEach(pattern => {
@@ -465,6 +806,10 @@ export function scanText(
         
         // Verificação robusta de exceções
         if (isException(matchText)) continue;
+        
+        // Ensure the matched text looks like a name/entity (at least one capital letter)
+        // This avoids catching common lowercase phrases like "acordo e documentos"
+        if (!/[A-ZÀ-Ÿ]/.test(matchText)) continue;
         
         let type = 'NOME';
         const prefix = match[0].split(':')[0].toLowerCase();
@@ -524,6 +869,13 @@ export function scanText(
     mergedMatches.push(match);
   });
 
+  // Count occurrences for repetition scoring
+  const occurrenceCounts = new Map<string, number>();
+  mergedMatches.forEach(m => {
+    const norm = normalizeText(m.text);
+    occurrenceCounts.set(norm, (occurrenceCounts.get(norm) || 0) + 1);
+  });
+
   const addEntity = (original: string, type: string, start: number, end: number) => {
     let trimmed = original.trim();
     
@@ -575,6 +927,32 @@ export function scanText(
 
     // Advanced Judge Identification based on globalKnowledge
     // ONLY if not already decided by user (treated) or explicit knowledge
+    const before = text.substring(Math.max(0, start - 300), start);
+    const after = text.substring(end, Math.min(text.length, end + 300));
+    
+    // Capture more words for better context in modals
+    const wordsBefore = before.trim().split(/\s+/).slice(-15).join(' ');
+    const wordsAfter = after.trim().split(/\s+/).slice(0, 15).join(' ');
+    
+    // Context snippet for quick lists (2 words before + entity + 2 words after)
+    const contextWordsBefore = before.trim().split(/\s+/).slice(-2).join(' ');
+    const contextWordsAfter = after.trim().split(/\s+/).slice(0, 2).join(' ');
+    const contextSnippet = `${contextWordsBefore} ${trimmed} ${contextWordsAfter}`.trim();
+
+    // SCORING PIPELINE
+    let score = 10; // Default high for non-name types (NIF, EMAIL, etc)
+    const isNameType = identifiedType === 'NOME' || identifiedType === 'AUTOR' || identifiedType === 'JUIZ' || identifiedType === 'ADVOGADO';
+    
+    if (isNameType) {
+      const repetitionCount = occurrenceCounts.get(norm) || 1;
+      score = calculateNameScore(trimmed, identifiedType, wordsBefore, wordsAfter, repetitionCount);
+
+      // Skip very low confidence names to avoid cluttering the list with false positives
+      if (score < -2) return;
+    }
+
+    // Advanced Judge Identification based on globalKnowledge
+    // ONLY if not already decided by user (treated) or explicit knowledge
     const nameWords = norm.split(/\s+/).filter(w => w.length > 2);
 
     if (!knowledgeType && (!existing || (!existing.treated && !existing.ignored)) && 
@@ -617,6 +995,7 @@ export function scanText(
         } else {
           identifiedType = 'AUTOR';
         }
+        score += 5; // Boost score if matched with global knowledge
       }
     }
 
@@ -631,35 +1010,32 @@ export function scanText(
         type: identifiedType, // Update type if it was refined but not treated
         pseudonym: existing.type !== identifiedType ? getNextPseudonym(identifiedType, [...existingEntities, ...entities]) : existing.pseudonym,
         fileIds: updatedFileIds,
+        score: score,
       });
       return;
     }
 
-    const before = text.substring(Math.max(0, start - 300), start);
-    const after = text.substring(end, Math.min(text.length, end + 300));
-    
-    // Capture more words for better context in modals
-    const wordsBefore = before.trim().split(/\s+/).slice(-15).join(' ');
-    const wordsAfter = after.trim().split(/\s+/).slice(0, 15).join(' ');
-    
-    // Context snippet for quick lists (2 words before + entity + 2 words after)
-    const contextWordsBefore = before.trim().split(/\s+/).slice(-2).join(' ');
-    const contextWordsAfter = after.trim().split(/\s+/).slice(0, 2).join(' ');
-    const contextSnippet = `${contextWordsBefore} ${trimmed} ${contextWordsAfter}`.trim();
-
     const id = Math.random().toString(36).substring(7);
     const pseudonym = getNextPseudonym(identifiedType, [...existingEntities, ...entities]);
     
+    // DECISION: Enable automatically only if score is high enough
+    // score >= 4: Auto-enable
+    // 2 <= score < 4: Manual review (enabled: false)
+    // score < 2: Likely false positive, but we keep it disabled for safety
+    const isAutoEnabled = score >= 4;
+
     entities.push({
       id,
       original: trimmed,
       type: identifiedType,
       pseudonym,
-      enabled: true,
+      enabled: isAutoEnabled,
       fileIds: [fileId],
+      context: wordsBefore.split(/\s+/).pop() || '',
       contextBefore: wordsBefore,
       contextAfter: wordsAfter,
-      contextSnippet
+      contextSnippet,
+      score: score
     });
   };
 
@@ -693,7 +1069,18 @@ export function groupSimilarEntities(entities: PIIEntity[], isRelated: boolean =
     groupId: e.groupId?.startsWith('manual-group-') ? e.groupId : undefined 
   }));
   
-  // 2. Group by exact match (case-insensitive) for all types
+  // Pre-calculate counts for "at least 2" rule using superNormalize
+  const counts: Record<string, number> = {};
+  newEntities.forEach(entity => {
+    const fileId = entity.fileIds?.[0] || 'unknown';
+    const sNorm = superNormalize(entity.original);
+    const key = isRelated 
+      ? `${entity.type}:${sNorm}`
+      : `${fileId}:${entity.type}:${sNorm}`;
+    counts[key] = (counts[key] || 0) + 1;
+  });
+
+  // 2. Group by exact match (normalized) for all types
   const groups: Record<string, { id: string, pseudonym: string, treated: boolean, type: string }> = {};
   
   // Sort: Manual groups first, then treated, then others
@@ -709,33 +1096,46 @@ export function groupSimilarEntities(entities: PIIEntity[], isRelated: boolean =
   
   sortedEntities.forEach(entity => {
     const fileId = entity.fileIds?.[0] || 'unknown';
+    const sNorm = superNormalize(entity.original);
     const key = isRelated 
-      ? `${entity.type}:${entity.original.toLowerCase().trim()}`
-      : `${fileId}:${entity.type}:${entity.original.toLowerCase().trim()}`;
+      ? `${entity.type}:${sNorm}`
+      : `${fileId}:${entity.type}:${sNorm}`;
 
-    if (!groups[key]) {
-      groups[key] = { 
-        id: entity.groupId || `group-${entity.id}`, 
-        pseudonym: entity.pseudonym,
-        treated: entity.treated || false,
-        type: entity.type
-      };
-    } else {
-      if (entity.groupId?.startsWith('manual-group-') && !groups[key].id.startsWith('manual-group-')) {
-        groups[key].id = entity.groupId;
-        groups[key].pseudonym = entity.pseudonym;
-        groups[key].treated = true;
-      } else if (entity.treated && !groups[key].treated) {
-        groups[key].pseudonym = entity.pseudonym;
-        groups[key].treated = true;
-        groups[key].type = entity.type;
+    // Only create a group if there's more than one occurrence OR it's already a manual group
+    const hasMultiple = counts[key] > 1;
+    const isManual = entity.groupId?.startsWith('manual-group-');
+
+    if (hasMultiple || isManual) {
+      if (!groups[key]) {
+        groups[key] = { 
+          id: entity.groupId || `group-${entity.id}`, 
+          pseudonym: entity.pseudonym,
+          treated: entity.treated || false,
+          type: entity.type
+        };
+      } else {
+        if (entity.groupId?.startsWith('manual-group-') && !groups[key].id.startsWith('manual-group-')) {
+          groups[key].id = entity.groupId;
+          groups[key].pseudonym = entity.pseudonym;
+          groups[key].treated = true;
+        } else if (entity.treated && !groups[key].treated) {
+          groups[key].pseudonym = entity.pseudonym;
+          groups[key].treated = true;
+          groups[key].type = entity.type;
+        }
       }
-    }
-    
-    const originalEntity = newEntities.find(e => e.id === entity.id);
-    if (originalEntity) {
-      originalEntity.groupId = groups[key].id;
-      originalEntity.pseudonym = groups[key].pseudonym;
+      
+      const originalEntity = newEntities.find(e => e.id === entity.id);
+      if (originalEntity) {
+        originalEntity.groupId = groups[key].id;
+        originalEntity.pseudonym = groups[key].pseudonym;
+      }
+    } else {
+      // Single occurrence and not manual: ensure no groupId
+      const originalEntity = newEntities.find(e => e.id === entity.id);
+      if (originalEntity) {
+        originalEntity.groupId = undefined;
+      }
     }
   });
 
@@ -746,7 +1146,7 @@ export function groupSimilarEntities(entities: PIIEntity[], isRelated: boolean =
 
   const VERY_COMMON_NAMES = new Set(['maria', 'jose', 'manuel', 'antonio', 'joao', 'francisco', 'carlos', 'paulo', 'pedro', 'luis', 'ana', 'isabel', 'teresa', 'margarida', 'silva', 'santos', 'ferreira', 'pereira', 'oliveira', 'costa', 'rodrigues', 'martins', 'jesus']);
 
-  // Optimization: Use an adjacency list and find connected components to avoid O(N^2) while(changed)
+  // Optimization: Use an adjacency list and find connected components
   const adj = new Map<number, number[]>();
   
   for (let i = 0; i < nameEntities.length; i++) {
@@ -756,31 +1156,32 @@ export function groupSimilarEntities(entities: PIIEntity[], isRelated: boolean =
       
       if (!isRelated && e1.fileIds?.[0] !== e2.fileIds?.[0]) continue;
 
-      const w1 = getWords(e1.original);
-      const w2 = getWords(e2.original);
-      if (w1.length === 0 || w2.length === 0) continue;
-
       let isMatch = false;
       
-      if (e1.original.toLowerCase().trim() === e2.original.toLowerCase().trim()) {
+      // Use superNormalize to handle "S ara" vs "Sara"
+      if (superNormalize(e1.original) === superNormalize(e2.original)) {
         isMatch = true;
       }
 
       if (!isMatch) {
-        const common = w1.filter(w => w2.includes(w));
-        const commonNonGeneric = common.filter(w => !VERY_COMMON_NAMES.has(w));
-        const similarity = common.length / Math.max(w1.length, w2.length);
-        
-        if (similarity >= 0.8) {
-          isMatch = true;
-        } else if (w1.every(w => w2.includes(w)) || w2.every(w => w1.includes(w))) {
-          if (common.length >= 2 && commonNonGeneric.length >= 1) {
-            if (Math.abs(w1.length - w2.length) <= 2) {
-              isMatch = true;
+        const w1 = getWords(e1.original);
+        const w2 = getWords(e2.original);
+        if (w1.length > 0 && w2.length > 0) {
+          const common = w1.filter(w => w2.includes(w));
+          const commonNonGeneric = common.filter(w => !VERY_COMMON_NAMES.has(w));
+          const similarity = common.length / Math.max(w1.length, w2.length);
+          
+          if (similarity >= 0.8) {
+            isMatch = true;
+          } else if (w1.every(w => w2.includes(w)) || w2.every(w => w1.includes(w))) {
+            if (common.length >= 2 && commonNonGeneric.length >= 1) {
+              if (Math.abs(w1.length - w2.length) <= 2) {
+                isMatch = true;
+              }
             }
+          } else if (common.length >= 3 && commonNonGeneric.length >= 2) {
+            isMatch = true;
           }
-        } else if (common.length >= 3 && commonNonGeneric.length >= 2) {
-          isMatch = true;
         }
       }
 

@@ -5,7 +5,8 @@ import {
   History, Link, ChevronDown, ChevronUp, ChevronRight, Search, Filter,
   MoreVertical, Copy, CheckCircle2, User, MapPin, Phone, 
   CreditCard, Mail, Hash, Briefcase, Scale, Trash, RotateCcw, RotateCw,
-  Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type, List, Pencil, RefreshCw, Building2
+  Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type, List, Pencil, RefreshCw, Building2,
+  ChevronLeft
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjs from 'pdfjs-dist';
@@ -58,6 +59,324 @@ interface FileData {
   status: 'pending' | 'processing' | 'done' | 'error';
 }
 
+const PDFPage = memo(({ file, pageNum, allEntities, selectedEntityId, selectedIds, onVisible }: { 
+  file: File, 
+  pageNum: number, 
+  allEntities: PIIEntity[],
+  selectedEntityId?: string | null,
+  selectedIds?: Set<string>,
+  onVisible?: () => void
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [markerPos, setMarkerPos] = useState<{ x: number, y: number } | null>(null);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting) onVisible?.();
+    }, { threshold: 0.5 });
+    if (containerRef.current) observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, [onVisible]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const render = async () => {
+      try {
+        if (!file || typeof file.arrayBuffer !== 'function') {
+          throw new Error("Ficheiro original não carregado. Por favor, recarregue o ficheiro.");
+        }
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+        const page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 1.5 });
+        const canvas = canvasRef.current;
+        if (!canvas || !isMounted) return;
+        const context = canvas.getContext('2d');
+        if (!context) return;
+        
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        
+        await (page as any).render({ canvasContext: context, viewport }).promise;
+        
+        const textContent = await page.getTextContent();
+        
+        // 1. Highlight all detected entities (subtle)
+        const activeEntities = allEntities.filter(e => (e.enabled && !e.ignored) || e.id === selectedEntityId || selectedIds?.has(e.id));
+        
+        let foundMarker = false;
+        activeEntities.forEach(entity => {
+          const isSelected = entity.id === selectedEntityId || selectedIds?.has(entity.id);
+          const term = entity.original.toLowerCase();
+          
+          context.fillStyle = isSelected ? 'rgba(255, 224, 0, 0.5)' : 'rgba(99, 102, 241, 0.15)';
+          
+          textContent.items.forEach((item: any) => {
+            if (item.str.toLowerCase().includes(term)) {
+              const [x, y] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+              const fontHeight = Math.sqrt(item.transform[2] * item.transform[2] + item.transform[3] * item.transform[3]);
+              
+              context.fillRect(
+                x, 
+                y - (fontHeight * viewport.scale), 
+                item.width * viewport.scale, 
+                fontHeight * viewport.scale * 1.2
+              );
+              
+              if (isSelected) {
+                if (!foundMarker && entity.id === selectedEntityId) {
+                  setMarkerPos({ x, y: y - (fontHeight * viewport.scale) });
+                  foundMarker = true;
+                }
+                context.strokeStyle = '#EAB308';
+                context.lineWidth = 2;
+                context.strokeRect(
+                  x, 
+                  y - (fontHeight * viewport.scale), 
+                  item.width * viewport.scale, 
+                  fontHeight * viewport.scale * 1.2
+                );
+              }
+            }
+          });
+        });
+        if (!foundMarker) setMarkerPos(null);
+      } catch (err) {
+        console.error("Error rendering PDF page:", err);
+      }
+    };
+    render();
+    return () => { isMounted = false; };
+  }, [file, pageNum, allEntities, selectedEntityId, selectedIds]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <canvas ref={canvasRef} className="max-w-full h-auto" />
+      {markerPos && (
+        <div 
+          id="pdf-active-marker"
+          className="absolute pointer-events-none"
+          style={{ 
+            left: markerPos.x, 
+            top: markerPos.y,
+            width: 10,
+            height: 10
+          }}
+        />
+      )}
+    </div>
+  );
+});
+
+const DocumentViewer = memo(({ file, entities, selectedEntityId, selectedIds, setPendingManualTerm, globalKnowledge, safelist }: { 
+  file: FileData | null, 
+  entities: PIIEntity[],
+  selectedEntityId?: string | null,
+  selectedIds: Set<string>,
+  setPendingManualTerm: (term: { text: string, x: number, y: number } | null) => void,
+  globalKnowledge: Record<string, string>,
+  safelist: Safelist
+}) => {
+  const [pages, setPages] = useState<number[]>([]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [numPages, setNumPages] = useState(0);
+  const [viewMode, setViewMode] = useState<'pdf' | 'text'>('pdf');
+
+  const isPDF = file?.type?.includes('pdf') || file?.name?.toLowerCase().endsWith('.pdf');
+
+  useEffect(() => {
+    if (!file || !isPDF) {
+      setPages([]);
+      setNumPages(0);
+      return;
+    }
+    
+    const loadPDF = async () => {
+      try {
+        if (!file.rawFile || typeof file.rawFile.arrayBuffer !== 'function') {
+          return; // Silent return as it might be a restored state
+        }
+        const arrayBuffer = await file.rawFile.arrayBuffer();
+        const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+        setNumPages(pdf.numPages);
+        const p = [];
+        for (let i = 1; i <= pdf.numPages; i++) p.push(i);
+        setPages(p);
+      } catch (err) {
+        console.error("Error loading PDF for viewer:", err);
+      }
+    };
+    loadPDF();
+  }, [file, isPDF]);
+
+  useEffect(() => {
+    const selectedEntity = entities.find(e => e.id === selectedEntityId);
+    if (!selectedEntity || !containerRef.current || !file) return;
+    
+    const findAndScroll = async () => {
+      if (isPDF && viewMode === 'pdf') {
+        try {
+          if (!file.rawFile || typeof file.rawFile.arrayBuffer !== 'function') return;
+          const arrayBuffer = await file.rawFile.arrayBuffer();
+          const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+          const term = selectedEntity.original.toLowerCase();
+          
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const textContent = await page.getTextContent();
+            const hasTerm = textContent.items.some((item: any) => item.str.toLowerCase().includes(term));
+            
+            if (hasTerm) {
+              const pageEl = containerRef.current?.querySelector(`[data-page-number="${i}"]`);
+              if (pageEl) {
+                pageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                setCurrentPage(i);
+                
+                // Try to find the specific marker after page scroll
+                setTimeout(() => {
+                  const marker = pageEl.querySelector('#pdf-active-marker');
+                  if (marker) {
+                    marker.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  }
+                }, 300);
+                break;
+              }
+            }
+          }
+        } catch (err) {
+          console.error("Error searching in PDF:", err);
+        }
+      } else {
+        // Text mode scroll
+        const scrollToActive = () => {
+          const el = containerRef.current?.querySelector('#active-highlight');
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        };
+        
+        // Try multiple times as rendering might be async
+        setTimeout(scrollToActive, 100);
+        setTimeout(scrollToActive, 300);
+        setTimeout(scrollToActive, 600);
+      }
+    };
+    findAndScroll();
+  }, [selectedEntityId, file, isPDF, entities, viewMode]);
+
+  if (!file) return (
+    <div className="flex-1 flex flex-col items-center justify-center p-12 text-center bg-gray-50">
+      <FileText className="w-12 h-12 text-gray-300 mb-4" />
+      <p className="text-sm text-gray-500 italic">Selecione um ficheiro para visualizar o original</p>
+    </div>
+  );
+
+  return (
+    <div className="flex-1 flex flex-col bg-gray-100 overflow-hidden">
+      <div className="bg-white border-b border-gray-200 px-4 py-2.5 flex items-center justify-between shadow-sm z-10 shrink-0">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <FileText className="w-4 h-4 text-indigo-500" />
+            <span className="text-xs font-bold truncate max-w-[150px]">{file.name}</span>
+          </div>
+          {isPDF && (
+            <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200">
+              <button 
+                onClick={() => setViewMode('pdf')}
+                className={`px-3 py-1 text-[9px] font-bold uppercase tracking-wider rounded-md transition-all ${viewMode === 'pdf' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                PDF Original
+              </button>
+              <button 
+                onClick={() => setViewMode('text')}
+                className={`px-3 py-1 text-[9px] font-bold uppercase tracking-wider rounded-md transition-all ${viewMode === 'text' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                Modo Texto (Seleção)
+              </button>
+            </div>
+          )}
+        </div>
+        {isPDF && viewMode === 'pdf' && (
+          <div className="flex items-center gap-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+            <span>Página {currentPage} / {numPages}</span>
+          </div>
+        )}
+      </div>
+      
+      <div 
+        ref={containerRef} 
+        className="flex-1 overflow-y-auto p-4 space-y-6 scroll-smooth bg-gray-200/50"
+        onMouseUp={(e) => {
+          if (viewMode === 'text' || !isPDF) {
+            const selection = window.getSelection();
+            const text = selection?.toString().trim();
+            if (text && text.length > 1) {
+              setPendingManualTerm({
+                text,
+                x: e.clientX,
+                y: e.clientY
+              });
+            }
+          }
+        }}
+      >
+        {isPDF && viewMode === 'pdf' ? (
+          pages.map(pageNum => (
+            <div 
+              key={pageNum} 
+              data-page-number={pageNum}
+              className="bg-white shadow-lg mx-auto relative group rounded-sm overflow-hidden"
+              style={{ width: 'fit-content' }}
+            >
+              <PDFPage 
+                file={file.rawFile} 
+                pageNum={pageNum} 
+                allEntities={entities}
+                selectedEntityId={selectedEntityId}
+                selectedIds={selectedIds}
+                onVisible={() => setCurrentPage(pageNum)}
+              />
+              <div className="absolute top-2 left-2 bg-black/60 text-white text-[9px] font-bold px-2 py-1 rounded backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity">
+                PÁG. {pageNum}
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="bg-white p-10 shadow-sm mx-auto max-w-4xl min-h-full rounded-xl border border-gray-200 relative">
+             <div className="prose prose-sm max-w-none font-mono text-sm whitespace-pre-wrap text-gray-700">
+               <HighlightText 
+                 text={file.content} 
+                 entities={[
+                   ...entities,
+                   ...(selectedEntityId ? [{ 
+                     id: 'selected-highlight', 
+                     original: entities.find(e => e.id === selectedEntityId)?.original || '', 
+                     type: 'ACTIVE_HIGHLIGHT', 
+                     pseudonym: '', 
+                     enabled: true 
+                   }] : []),
+                   ...Array.from(selectedIds).map(id => ({
+                     id: `selected-id-${id}`,
+                     original: entities.find(e => e.id === id)?.original || '',
+                     type: 'HIGHLIGHT',
+                     pseudonym: '',
+                     enabled: true
+                   }))
+                 ]} 
+                 mode="original" 
+                 globalKnowledge={globalKnowledge}
+                 safelist={safelist}
+               />
+             </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
 const HighlightText = memo(({ text, entities, mode, globalKnowledge, safelist }: { 
   text: string, 
   entities: PIIEntity[], 
@@ -69,7 +388,10 @@ const HighlightText = memo(({ text, entities, mode, globalKnowledge, safelist }:
   
   const result = useMemo(() => {
     // Filter entities that are actually being anonymized
-    const activeEntities = entities.filter(e => e.enabled && !e.ignored && e.type !== 'AUTOR' && e.type !== 'JUIZ');
+    const activeEntities = [
+      ...entities.filter(e => e.type === 'ACTIVE_HIGHLIGHT' || e.type === 'HIGHLIGHT'),
+      ...entities.filter(e => (e.enabled && !e.ignored && e.type !== 'AUTOR' && e.type !== 'JUIZ' && e.type !== 'HIGHLIGHT' && e.type !== 'ACTIVE_HIGHLIGHT'))
+    ];
     
     const patterns = activeEntities.map(e => ({
       pattern: mode === 'original' ? e.original : e.pseudonym,
@@ -112,9 +434,21 @@ const HighlightText = memo(({ text, entities, mode, globalKnowledge, safelist }:
     if (allPatterns.length === 0) return { parts: [text], allPatterns: [] };
 
     allPatterns.sort((a, b) => b.pattern.length - a.pattern.length);
-    const uniquePatterns = Array.from(new Set(allPatterns.map(p => p.pattern)));
+    const uniquePatterns = Array.from(new Set(allPatterns.map(p => p.pattern.toLowerCase())));
     const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const combinedRegex = new RegExp(`(${uniquePatterns.map(p => escapeRegExp(p)).join('|')})`, 'g');
+    
+    // Use word boundaries for short patterns to avoid matching inside other words (e.g. "os" in "instrumentos")
+    // For longer patterns, word boundaries are also generally safer.
+    const patternStrings = uniquePatterns.map(p => {
+      const escaped = escapeRegExp(p);
+      // If it's a simple word-like pattern, wrap in word boundaries
+      if (/^[a-z0-9À-ÿ]+$/i.test(p)) {
+        return `\\b${escaped}\\b`;
+      }
+      return escaped;
+    });
+
+    const combinedRegex = new RegExp(`(${patternStrings.join('|')})`, 'gi');
     
     return { parts: text.split(combinedRegex), allPatterns };
   }, [text, entities, mode, globalKnowledge, safelist]);
@@ -122,16 +456,20 @@ const HighlightText = memo(({ text, entities, mode, globalKnowledge, safelist }:
   return (
     <>
       {result.parts.map((part, i) => {
-        const match = result.allPatterns.find(p => p.pattern === part);
+        const partLower = part.toLowerCase();
+        const match = result.allPatterns.find(p => p.pattern.toLowerCase() === partLower);
         if (match) {
           if (match.entity) {
-            const color = PII_COLORS[match.entity.type] || { hex: '#E5E7EB', textHex: '#374151' };
+            const color = (match.entity.type === 'HIGHLIGHT' || match.entity.type === 'ACTIVE_HIGHLIGHT')
+              ? { hex: '#FDE047', textHex: '#854D0E' } 
+              : PII_COLORS[match.entity.type] || { hex: '#E5E7EB', textHex: '#374151' };
             return (
               <span 
                 key={i} 
-                className="px-0.5 rounded font-bold treated-pii"
+                id={match.entity.type === 'ACTIVE_HIGHLIGHT' ? 'active-highlight' : undefined}
+                className={`px-0.5 rounded font-bold treated-pii ${match.entity.type === 'ACTIVE_HIGHLIGHT' ? 'animate-pulse ring-2 ring-yellow-400' : ''}`}
                 style={{ backgroundColor: color.hex, color: color.textHex }}
-                title={`${match.entity.type}: ${match.entity.original} -> ${match.entity.pseudonym}`}
+                title={match.entity.type === 'ACTIVE_HIGHLIGHT' ? 'Elemento Selecionado' : `${match.entity.type}: ${match.entity.original} -> ${match.entity.pseudonym}`}
               >
                 {part}
               </span>
@@ -308,6 +646,8 @@ export default function App() {
   const [knowledgeSearch, setKnowledgeSearch] = useState('');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [splitView, setSplitView] = useState(false);
+  const [reviewMode, setReviewMode] = useState(false);
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [history, setHistory] = useState<{ entities: PIIEntity[], files: FileData[], ambiguousEntities: PIIEntity[] }[]>([]);
@@ -335,6 +675,27 @@ export default function App() {
       }
     }
   };
+
+  // Scroll to selected entity in Split View
+  useEffect(() => {
+    if (!selectedEntityId || !splitView) return;
+    
+    const scrollToActive = () => {
+      const leftEl = leftScrollRef.current?.querySelector('#active-highlight');
+      const rightEl = rightScrollRef.current?.querySelector('#active-highlight');
+      
+      if (leftEl) {
+        leftEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      if (rightEl) {
+        rightEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    };
+
+    // Small delay to ensure HighlightText has rendered
+    const timer = setTimeout(scrollToActive, 300);
+    return () => clearTimeout(timer);
+  }, [selectedEntityId, splitView]);
 
   const navigateUntreated = (direction: 'next' | 'prev') => {
     const container = leftScrollRef.current;
@@ -384,6 +745,15 @@ export default function App() {
     }
   }, [toast]);
 
+  useEffect(() => {
+    if (reviewMode && !selectedFileId && files.length > 0) {
+      setSelectedFileId(files[0].id);
+    }
+    if (!reviewMode) {
+      setSelectedEntityId(null);
+    }
+  }, [reviewMode, selectedFileId, files]);
+
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ message, type });
   };
@@ -395,7 +765,7 @@ export default function App() {
     }
     const newState = { 
       entities: JSON.parse(JSON.stringify(newEntities)), 
-      files: JSON.parse(JSON.stringify(newFiles)),
+      files: newFiles.map(f => ({ ...f })),
       ambiguousEntities: JSON.parse(JSON.stringify(newAmbiguous))
     };
     setHistory(prev => {
@@ -535,14 +905,17 @@ export default function App() {
 
   useEffect(() => {
     if (files.length > 0 || entities.length > 0) {
-      localStorage.setItem('pii_project_state', JSON.stringify({ files, entities }));
+      localStorage.setItem('pii_project_state', JSON.stringify({ 
+        files: files.map(({ rawFile, ...rest }) => rest), 
+        entities 
+      }));
     }
   }, [files, entities]);
 
   // Initial history state
   useEffect(() => {
     if (history.length === 0 && (files.length > 0 || entities.length > 0)) {
-      setHistory([{ entities: JSON.parse(JSON.stringify(entities)), files: JSON.parse(JSON.stringify(files)) }]);
+      setHistory([{ entities: JSON.parse(JSON.stringify(entities)), files: files.map(f => ({ ...f })) }]);
       setHistoryIndex(0);
     }
   }, [files, entities, history.length]);
@@ -2222,6 +2595,9 @@ export default function App() {
   };
 
   const exportAnonymizedPDFBytes = async (fileData: FileData): Promise<Uint8Array> => {
+    if (!fileData.rawFile || typeof fileData.rawFile.arrayBuffer !== 'function') {
+      throw new Error(`O ficheiro original de "${fileData.name}" não está disponível. Por favor, recarregue o ficheiro.`);
+    }
     const arrayBuffer = await fileData.rawFile.arrayBuffer();
     
     // Load with pdfjs for rendering
@@ -2717,7 +3093,7 @@ export default function App() {
 
       {/* Header */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+        <div className="max-w-full mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="bg-indigo-600 p-2 rounded-lg">
               <Lock className="w-5 h-5 text-white" />
@@ -2760,6 +3136,13 @@ export default function App() {
                 title="Visualização Lado-a-Lado (Split View)"
               >
                 <Layers className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => setReviewMode(!reviewMode)}
+                className={`p-2 rounded-lg transition-colors ${reviewMode ? 'bg-indigo-100 text-indigo-600' : 'hover:bg-gray-100 text-gray-600'}`}
+                title="Modo de Revisão (Documento Original)"
+              >
+                <Eye className="w-4 h-4" />
               </button>
               <button 
                 onClick={handleExportReport}
@@ -2821,13 +3204,13 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-8">
+      <main className="max-w-full mx-auto px-4 py-8">
         <div className={`grid grid-cols-1 ${splitView ? 'lg:grid-cols-1' : 'lg:grid-cols-12'} gap-8`}>
-          {/* Left Column: Files & Controls */}
+          {/* Left Column: Files & Controls or Document Viewer */}
           {!splitView && (
-            <div className="lg:col-span-4 space-y-6">
-              {/* Search Box */}
-              <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
+            <div className={`${reviewMode ? 'lg:col-span-8 sticky top-8' : 'lg:col-span-4'} space-y-6 flex flex-col h-[calc(100vh-120px)]`}>
+              {/* Search Box (Always visible at top) */}
+              <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm shrink-0">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Procurar</h2>
                   {searchTerm && (
@@ -2852,83 +3235,112 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Upload Box */}
-              <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Documentos</h2>
-                  {files.length > 0 && (
-                    <button 
-                      onClick={clearAll}
-                      className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1 font-medium"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      Limpar Tudo
-                    </button>
-                  )}
-                </div>
-                <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                  <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                    <Upload className="w-8 h-8 text-gray-400 mb-2" />
-                    <p className="text-sm text-gray-500 text-center px-4">Clique ou arraste ficheiros (incluindo relacionados)</p>
-                    <p className="text-xs text-gray-400 mt-1">PDF, DOCX, XLSX, TXT</p>
-                  </div>
-                  <input type="file" className="hidden" multiple accept=".pdf,.docx,.xlsx,.txt" onChange={handleFileUpload} />
-                </label>
-
-                <div className="mt-4 space-y-2">
-                  {files.map(file => (
-                    <div 
-                      key={file.id} 
-                      onClick={() => setSelectedFileId(file.id)}
-                      className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${selectedFileId === file.id ? 'bg-indigo-50 border-indigo-200 shadow-sm' : 'bg-gray-50 border-gray-100 hover:border-gray-300'}`}
-                    >
-                      <div className="flex items-center gap-3 overflow-hidden">
-                        <FileText className="w-4 h-4 text-indigo-500 flex-shrink-0" />
-                        <span className="text-sm font-medium truncate">{file.name}</span>
-                      </div>
-                      {file.status === 'processing' ? (
-                        <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-                      ) : file.status === 'done' ? (
-                        <CheckCircle2 className="w-4 h-4 text-green-500" />
-                      ) : file.status === 'error' ? (
-                        <AlertCircle className="w-4 h-4 text-red-500" />
-                      ) : null}
+              {reviewMode ? (
+                <div className="flex-1 flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden min-h-0">
+                  <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50 shrink-0">
+                    <div className="flex items-center gap-2">
+                      <Eye className="w-4 h-4 text-indigo-600" />
+                      <h2 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Visualizador Original</h2>
                     </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Manual Button */}
-              <button 
-                onClick={() => setShowManualModal(true)}
-                className="w-full flex items-center justify-between p-4 bg-white rounded-2xl border border-gray-200 shadow-sm hover:border-indigo-300 hover:bg-indigo-50/30 transition-all group"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-all">
-                    <FileText className="w-5 h-5" />
+                    <button 
+                      onClick={() => setReviewMode(false)} 
+                      className="text-[10px] font-bold text-gray-400 hover:text-gray-600 uppercase tracking-widest flex items-center gap-1"
+                    >
+                      <X className="w-3 h-3" />
+                      Fechar
+                    </button>
                   </div>
-                  <div className="text-left">
-                    <h3 className="text-sm font-bold text-gray-900">Manual do Utilizador</h3>
-                    <p className="text-xs text-gray-500">Guia completo e ajuda</p>
-                  </div>
+                  <DocumentViewer 
+                    file={files.find(f => f.id === selectedFileId) || null} 
+                    entities={entities}
+                    selectedEntityId={selectedEntityId}
+                    selectedIds={selectedIds}
+                    setPendingManualTerm={setPendingManualTerm}
+                    globalKnowledge={globalKnowledge}
+                    safelist={safelist}
+                  />
                 </div>
-                <ChevronRight className="w-5 h-5 text-gray-400 group-hover:text-indigo-600 transition-all" />
-              </button>
+              ) : (
+                <>
+                  {/* Upload Box */}
+                  <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
+                    <div className="flex items-center justify-between mb-4">
+                      <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Documentos</h2>
+                      {files.length > 0 && (
+                        <button 
+                          onClick={clearAll}
+                          className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1 font-medium"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          Limpar Tudo
+                        </button>
+                      )}
+                    </div>
+                    <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                      <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                        <Upload className="w-8 h-8 text-gray-400 mb-2" />
+                        <p className="text-sm text-gray-500 text-center px-4">Clique ou arraste ficheiros (incluindo relacionados)</p>
+                        <p className="text-xs text-gray-400 mt-1">PDF, DOCX, XLSX, TXT</p>
+                      </div>
+                      <input type="file" className="hidden" multiple accept=".pdf,.docx,.xlsx,.txt" onChange={handleFileUpload} />
+                    </label>
 
-              <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100 flex gap-3">
-                <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
-                <div className="space-y-1">
-                  <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wider">Algo escapou?</h4>
-                  <p className="text-xs text-amber-800 leading-relaxed">
-                    Se a aplicação não detetou um nome, <strong>selecione o texto diretamente no documento original</strong> à esquerda ou use o botão <strong>"Re-analisar"</strong> no topo para uma varredura de consistência.
-                  </p>
-                </div>
-              </div>
+                    <div className="mt-4 space-y-2">
+                      {files.map(file => (
+                        <div 
+                          key={file.id} 
+                          onClick={() => setSelectedFileId(file.id)}
+                          className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${selectedFileId === file.id ? 'bg-indigo-50 border-indigo-200 shadow-sm' : 'bg-gray-50 border-gray-100 hover:border-gray-300'}`}
+                        >
+                          <div className="flex items-center gap-3 overflow-hidden">
+                            <FileText className="w-4 h-4 text-indigo-500 flex-shrink-0" />
+                            <span className="text-sm font-medium truncate">{file.name}</span>
+                          </div>
+                          {file.status === 'processing' ? (
+                            <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                          ) : file.status === 'done' ? (
+                            <CheckCircle2 className="w-4 h-4 text-green-500" />
+                          ) : file.status === 'error' ? (
+                            <AlertCircle className="w-4 h-4 text-red-500" />
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Manual Button */}
+                  <button 
+                    onClick={() => setShowManualModal(true)}
+                    className="w-full flex items-center justify-between p-4 bg-white rounded-2xl border border-gray-200 shadow-sm hover:border-indigo-300 hover:bg-indigo-50/30 transition-all group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                        <FileText className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <h3 className="text-sm font-bold text-gray-900">Manual do Utilizador</h3>
+                        <p className="text-xs text-gray-500">Guia completo e ajuda</p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-5 h-5 text-gray-400 group-hover:text-indigo-600 transition-all" />
+                  </button>
+
+                  <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100 flex gap-3">
+                    <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+                    <div className="space-y-1">
+                      <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wider">Algo escapou?</h4>
+                      <p className="text-xs text-amber-800 leading-relaxed">
+                        Se a aplicação não detetou um nome, <strong>selecione o texto diretamente no documento original</strong> à esquerda ou use o botão <strong>"Re-analisar"</strong> no topo para uma varredura de consistência.
+                      </p>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
           {/* Right Column: Entities List or Split View */}
-          <div className={`${splitView ? 'lg:col-span-12' : 'lg:col-span-8'} space-y-6`}>
+          <div className={`${splitView ? 'lg:col-span-12' : reviewMode ? 'lg:col-span-4' : 'lg:col-span-8'} space-y-6`}>
             {splitView ? (
               <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden flex flex-col h-[calc(100vh-200px)]">
                 <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
@@ -2967,14 +3379,30 @@ export default function App() {
                       className="flex-1 p-6 overflow-y-auto font-mono text-sm whitespace-pre-wrap text-gray-600 bg-white relative"
                     >
                       {selectedFileId ? (
-                <HighlightText 
-                  text={files.find(f => f.id === selectedFileId)?.content || ""} 
-                  entities={entities} 
-                  mode="original" 
-                  globalKnowledge={globalKnowledge}
-                  safelist={safelist}
-                />
-              ) : "Selecione um ficheiro para visualizar"}
+                        <HighlightText 
+                          text={files.find(f => f.id === selectedFileId)?.content || ""} 
+                          entities={[
+                            ...entities,
+                            ...(selectedEntityId ? [{ 
+                              id: 'selected-highlight', 
+                              original: entities.find(e => e.id === selectedEntityId)?.original || '', 
+                              type: 'ACTIVE_HIGHLIGHT', 
+                              pseudonym: '', 
+                              enabled: true 
+                            }] : []),
+                            ...Array.from(selectedIds).map(id => ({
+                              id: `selected-id-${id}`,
+                              original: entities.find(e => e.id === id)?.original || '',
+                              type: 'HIGHLIGHT',
+                              pseudonym: '',
+                              enabled: true
+                            }))
+                          ]} 
+                          mode="original" 
+                          globalKnowledge={globalKnowledge}
+                          safelist={safelist}
+                        />
+                      ) : "Selecione um ficheiro para visualizar"}
 
               {/* Navigation Arrows for Untreated Elements */}
               {selectedFileId && (
@@ -2996,73 +3424,6 @@ export default function App() {
                 </div>
               )}
 
-              {pendingManualTerm && (
-                        <div 
-                          className="fixed z-[60] bg-white shadow-2xl border border-gray-200 rounded-xl p-3 flex flex-col gap-2 animate-in fade-in zoom-in duration-200 min-w-[220px]"
-                          style={{ left: Math.min(window.innerWidth - 240, pendingManualTerm.x), top: pendingManualTerm.y + 15 }}
-                        >
-                          <div className="flex items-center justify-between mb-1">
-                            <div className="flex flex-col">
-                              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Adicionar como:</span>
-                              <span className="text-[9px] text-indigo-500 font-medium truncate max-w-[150px]">"{pendingManualTerm.text}"</span>
-                            </div>
-                            <button onClick={() => setPendingManualTerm(null)} className="p-1 hover:bg-gray-100 rounded-full">
-                              <X className="w-3 h-3 text-gray-400" />
-                            </button>
-                          </div>
-                          <div className="grid grid-cols-2 gap-1.5 max-h-[200px] overflow-y-auto pr-1">
-                            {ORDERED_PII_TYPES.map(type => {
-                              const color = PII_COLORS[type];
-                              return (
-                                <button 
-                                  key={type}
-                                  onClick={() => {
-                                    setGlobalKnowledge(prev => ({ ...prev, [pendingManualTerm.text.toLowerCase().trim()]: type }));
-                                    
-                                    // Also add to current entities as a treated entity
-                                    const newEntity: PIIEntity = {
-                                      id: `manual-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-                                      original: pendingManualTerm.text,
-                                      type: type,
-                                      pseudonym: getNextPseudonym(type, entities),
-                                      enabled: true,
-                                      treated: true,
-                                      fileIds: [selectedFileId || 'manual']
-                                    };
-                                    setEntities(prev => [...prev, newEntity]);
-                                    
-                                    setPendingManualTerm(null);
-                                    showToast(`"${pendingManualTerm.text}" adicionado como ${type} e VALIDADO.`, "success");
-                                  }}
-                                  className="px-2 py-1.5 text-[10px] font-bold rounded transition-all hover:scale-105 text-center shadow-sm border border-black/5"
-                                  style={{ backgroundColor: color.hex, color: color.textHex }}
-                                >
-                                  {type}
-                                </button>
-                              );
-                            })}
-                            <button 
-                              onClick={() => {
-                                setGlobalKnowledge(prev => ({ ...prev, [pendingManualTerm.text.toLowerCase().trim()]: 'EXCECAO' }));
-                                setPendingManualTerm(null);
-                                showToast(`"${pendingManualTerm.text}" adicionado às EXCEÇÕES.`, "success");
-                              }}
-                              className="col-span-2 px-2 py-1.5 bg-gray-100 text-gray-600 text-[10px] font-bold rounded hover:bg-gray-200 transition-all text-center border border-gray-200 mt-1"
-                            >
-                              EXCEÇÃO GLOBAL
-                            </button>
-                          </div>
-                          <button 
-                            onClick={() => {
-                              window.getSelection()?.removeAllRanges();
-                              setPendingManualTerm(null);
-                            }}
-                            className="text-[9px] text-gray-400 hover:text-gray-600 text-center mt-1"
-                          >
-                            Limpar Seleção
-                          </button>
-                        </div>
-                      )}
                     </div>
                   </div>
                   
@@ -3089,8 +3450,7 @@ export default function App() {
               <>
                 {/* Search & Bulk Actions Toolbar */}
                 <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm space-y-4">
-            <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 max-h-[92px] overflow-y-auto w-full">
                 <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-xl mr-2">
                   <button 
                     onClick={() => setIsRelated(true)}
@@ -3160,22 +3520,6 @@ export default function App() {
                   <span>{hideIgnored ? "Ocultar Ignorados" : "Ignorados Visíveis"}</span>
                 </button>
               </div>
-              <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
-                {['ALL', ...ORDERED_PII_TYPES].map(type => (
-                  <button
-                    key={type}
-                    onClick={() => setFilterType(type)}
-                    className={`px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors ${
-                      filterType === type 
-                        ? 'bg-indigo-600 text-white' 
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                    }`}
-                  >
-                    {type === 'ALL' ? 'Todos' : type}
-                  </button>
-                ))}
-              </div>
-            </div>
 
             {selectedIds.size > 0 && (
               <div className="flex items-center justify-between pt-4 border-t border-gray-100">
@@ -3440,8 +3784,17 @@ export default function App() {
                       {group.map((entity: PIIEntity) => (
                         <div 
                           key={entity.id} 
-                          className={`p-4 flex items-center gap-4 transition-colors ${
-                            selectedIds.has(entity.id) ? 'bg-indigo-50/30' : 'hover:bg-gray-50/30'
+                          onClick={() => {
+                            if (reviewMode) {
+                              setSelectedEntityId(entity.id);
+                              if (entity.fileIds && entity.fileIds.length > 0) {
+                                setSelectedFileId(entity.fileIds[0]);
+                              }
+                            }
+                          }}
+                          className={`p-4 flex items-center gap-4 transition-colors cursor-pointer ${
+                            selectedIds.has(entity.id) ? 'bg-indigo-50/30' : 
+                            selectedEntityId === entity.id ? 'bg-indigo-100/50 border-l-4 border-indigo-500' : 'hover:bg-gray-50/30'
                           }`}
                         >
                           <input 
@@ -3571,6 +3924,65 @@ export default function App() {
     </div>
   </div>
 </main>
+
+      {pendingManualTerm && (
+        <div 
+          className="fixed z-[100] bg-white shadow-2xl border border-gray-200 rounded-xl p-3 flex flex-col gap-2 animate-in fade-in zoom-in duration-200 min-w-[220px]"
+          style={{ left: Math.min(window.innerWidth - 240, pendingManualTerm.x), top: pendingManualTerm.y + 15 }}
+        >
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex flex-col">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Adicionar como:</span>
+              <span className="text-[9px] text-indigo-500 font-medium truncate max-w-[150px]">"{pendingManualTerm.text}"</span>
+            </div>
+            <button onClick={() => setPendingManualTerm(null)} className="p-1 hover:bg-gray-100 rounded-full">
+              <X className="w-3 h-3 text-gray-400" />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5 max-h-[200px] overflow-y-auto pr-1">
+            {ORDERED_PII_TYPES.map(type => {
+              const color = PII_COLORS[type];
+              return (
+                <button 
+                  key={type}
+                  onClick={() => {
+                    setGlobalKnowledge(prev => ({ ...prev, [pendingManualTerm.text.toLowerCase().trim()]: type }));
+                    
+                    // Also add to current entities as a treated entity
+                    const newEntity: PIIEntity = {
+                      id: `manual-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+                      original: pendingManualTerm.text,
+                      type: type,
+                      pseudonym: getNextPseudonym(type, entities),
+                      enabled: true,
+                      treated: true,
+                      fileIds: [selectedFileId || 'manual']
+                    };
+                    setEntities(prev => [...prev, newEntity]);
+                    
+                    setPendingManualTerm(null);
+                    showToast(`"${pendingManualTerm.text}" adicionado como ${type} e VALIDADO.`, "success");
+                  }}
+                  className="px-2 py-1.5 text-[10px] font-bold rounded transition-all hover:scale-105 text-center shadow-sm border border-black/5"
+                  style={{ backgroundColor: color.hex, color: color.textHex }}
+                >
+                  {type}
+                </button>
+              );
+            })}
+            <button 
+              onClick={() => {
+                setGlobalKnowledge(prev => ({ ...prev, [pendingManualTerm.text.toLowerCase().trim()]: 'EXCECAO' }));
+                setPendingManualTerm(null);
+                showToast(`"${pendingManualTerm.text}" adicionado às EXCEÇÕES.`, "success");
+              }}
+              className="col-span-2 px-2 py-1.5 bg-gray-100 text-gray-600 text-[10px] font-bold rounded hover:bg-gray-200 transition-all text-center border border-gray-200 mt-1"
+            >
+              EXCEÇÃO
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Floating Action Bar */}
       <AnimatePresence>
