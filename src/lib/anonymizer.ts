@@ -302,7 +302,8 @@ const ENTITY_BLACKLIST = [
   'NESTES TERMOS', 'PEDE DEFERIMENTO', 'VALOR DA CAUSA', 'TAXA DE JUSTICA',
   'ACORDO', 'DOCUMENTOS', 'ADMINISTRATIVO', 'FISCAL', 'CELEBRADO', 'APELACOES',
   'PRORROGACAO', 'PRAZO', 'ASSEMBLEIA', 'GERAL', 'LIGA', 'ASSOCIACAO', 'VILANOVENSE',
-  'PEDIDO', 'DEFERIDO', 'FAZER', 'AUTOS', 'CAUSA', 'CASO', 'FACTO', 'DIREITO'
+  'PEDIDO', 'DEFERIDO', 'FAZER', 'AUTOS', 'CAUSA', 'CASO', 'FACTO', 'DIREITO', 'JUIZ DE FORA', 'FORA',
+  'AUTOR DA HERANÇA', 'AUTOR DO CRIME', 'AUTOR DOS FACTOS', 'AUTORIA', 'PROPRIEDADE INTELECTUAL'
 ];
 
 const PII_PATTERNS = {
@@ -317,7 +318,7 @@ const PII_PATTERNS = {
   AUTOR: /\bAutor(?:\(a\))?\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
   ADVOGADO: /\b(?:Advogado|Advogada|Mandatário|Mandatária)\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
   // More aggressive name patterns for Portuguese - updated to handle internal spaces like "F erreira"
-  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Autora|Réu|Ré|Mandatário|Advogado|Advogada|Recorrente|Recorrido)(?:,\s*|\s+)([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
+  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Autora|Réu|Ré|Arguido|Arguida|Denunciado|Denunciada|Participante|Mandatário|Advogado|Advogada|Recorrente|Recorrido)(?:,\s*|\s+)([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
   NOME_CAPS: /\b([A-ZÀ-Ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e|DE|DA|DO|DOS|DAS|E)\s+[A-ZÀ-Ÿ]{2,}|\s+[A-ZÀ-Ÿ]{2,}){1,8})\b/g,
   // Generic sequence of capitalized words (2 or more) - updated to handle internal spaces
   NOME_GENERIC: /\b([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){0,8})\b/g,
@@ -329,7 +330,7 @@ const PII_PATTERNS = {
 };
 
 const NAME_TITLES = [
-  'Colega', 'Autor', 'Autora', 'Réu', 'Ré', 'Mandatário', 'Advogado', 'Advogada', 'Recorrente', 'Recorrido',
+  'Colega', 'Autor', 'Autora', 'Réu', 'Ré', 'Arguido', 'Arguida', 'Denunciado', 'Denunciada', 'Participante', 'Mandatário', 'Advogado', 'Advogada', 'Recorrente', 'Recorrido',
   'Dr\\.', 'Dra\\.', 'Sr\\.', 'Sra\\.', 'Eng\\.', 'Prof\\.', 'Juiz', 'Desembargador', 'Relator', 
   'Relatora', 'Venerando', 'Tribunal', 'Relação', 'Cfr\\.', 'In', 'Págs\\.', 'Pág\\.', 'Artigo', 'Art\\.', 'N\\.º', 
   'Processo', 'Proc\\.', 'Data', 'Hora', 'Local', 'Sede', 'Empresa', 'Sociedade', 'Trabalhador', 'Trabalhadora',
@@ -625,7 +626,7 @@ function calculateNameScore(
   if (allWords.length === 1 && AMBIGUOUS_PT_NAMES.has(allWords[0].toLowerCase())) {
     // Only penalize if it doesn't have a title context
     const contextLower = contextBefore.toLowerCase();
-    const titles = ['dr.', 'dra.', 'sr.', 'sra.', 'exmo.', 'exma.', 'juiz', 'autor', 'réu'];
+    const titles = ['dr.', 'dra.', 'sr.', 'sra.', 'exmo.', 'exma.', 'juiz', 'autor', 'réu', 'arguido', 'arguida'];
     if (!titles.some(t => contextLower.includes(t))) {
       score -= 5;
     }
@@ -787,10 +788,10 @@ export function scanText(
       }
     });
 
-  // 2. Portuguese Legal Patterns (Parties) - Updated to require capitalization for names
+  // 2. Portuguese Legal Patterns (Parties) - Updated to require capitalization for names and handle internal spaces
   const legalPatterns = [
-    /(?:Recorrente|Recorrido|Requerente|Requerido|Réu|Ré|Autor|Autora|Participante|Denunciado|Arguido|Assistente|Beneficiário|Executado|Exequente|Oponente|Reclamante|Reclamado|Interveniente|Contrainteressado|Apelante|Apelado|Agravante|Agravado|Embargante|Embargado|Demandante|Demandado|Advogado|Advogada|Mandatário|Mandatária)(?::|,\s*|\s+)\s*([A-ZÀ-Ÿ][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-Ÿ][a-zÀ-ÿ]+|\s+[A-ZÀ-Ÿ][a-zÀ-ÿ]+){0,6})/g,
-    /(?:Nome|Apelido|Filiação|Naturalidade|Residência|Sede)(?::|,\s*|\s+)\s*([A-ZÀ-Ÿ][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-Ÿ][a-zÀ-ÿ]+|\s+[A-ZÀ-Ÿ][a-zÀ-ÿ]+){0,6})/g,
+    /(?:Recorrente|Recorrido|Requerente|Requerido|Réu|Ré|Arguido|Arguida|Denunciado|Denunciada|Participante|Assistente|Beneficiário|Executado|Exequente|Oponente|Reclamante|Reclamado|Interveniente|Contrainteressado|Apelante|Apelado|Agravante|Agravado|Embargante|Embargado|Demandante|Demandado|Advogado|Advogada|Mandatário|Mandatária|Autor|Autora)(?::|,\s*|\s+)\s*([A-ZÀ-Ÿ](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-Ÿ](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-ZÀ-Ÿ](?:\s*[a-zÀ-ÿ]+|\.)){0,8})/g,
+    /(?:Nome|Apelido|Filiação|Naturalidade|Residência|Sede)(?::|,\s*|\s+)\s*([A-ZÀ-Ÿ](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-Ÿ](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-ZÀ-Ÿ](?:\s*[a-zÀ-ÿ]+|\.)){0,8})/g,
   ];
 
   legalPatterns.forEach(pattern => {
@@ -988,8 +989,8 @@ export function scanText(
         }
       });
 
-      // Atribuir o tipo com melhor correspondência (mínimo de 2 palavras e score > 0.4)
-      if (bestJudgeScore > 0.4 || bestAuthorScore > 0.4) {
+      // Atribuir o tipo com melhor correspondência (mínimo de 2 palavras e score > 0.7)
+      if (bestJudgeScore > 0.7 || bestAuthorScore > 0.7) {
         if (bestJudgeScore >= bestAuthorScore) {
           identifiedType = 'JUIZ';
         } else {
@@ -1266,9 +1267,12 @@ export function anonymizeText(text: string, entities: PIIEntity[]): string {
     .sort((a, b) => b.original.length - a.original.length);
 
   sortedEntities.forEach(entity => {
-    // Use a regex with word boundaries if possible, but be careful with special characters
-    const escaped = entity.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(escaped, 'g');
+    // Escape special characters and allow flexible spacing (handles justified text and extra spaces)
+    const escaped = entity.original
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\s+/g, '\\s+');
+    // Use word boundaries to avoid partial matches, but handle names that might start/end with non-word chars
+    const regex = new RegExp(`\\b${escaped}\\b`, 'g');
     result = result.replace(regex, entity.pseudonym);
   });
 
