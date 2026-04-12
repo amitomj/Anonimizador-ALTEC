@@ -6,7 +6,7 @@ import {
   MoreVertical, Copy, CheckCircle2, User, MapPin, Phone, 
   CreditCard, Mail, Hash, Briefcase, Scale, Trash, RotateCcw, RotateCw,
   Shield, Save, FolderOpen, XCircle, Zap, Unlink, Type, List, Pencil, RefreshCw, Building2,
-  ChevronLeft
+  ChevronLeft, Crop
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjs from 'pdfjs-dist';
@@ -18,6 +18,25 @@ import * as XLSX from 'xlsx';
 import { saveAs } from 'file-saver';
 import JSZip from 'jszip';
 import { 
+  Document as DocxDocument, 
+  Packer, 
+  Paragraph, 
+  TextRun, 
+  Table, 
+  TableRow, 
+  TableCell, 
+  AlignmentType, 
+  HeadingLevel,
+  FootnoteReferenceRun,
+  UnderlineType,
+  BorderStyle,
+  WidthType,
+  LineRuleType
+} from 'docx';
+import { jsPDF } from 'jspdf';
+import html2canvas from 'html2canvas';
+import 'jspdf-autotable';
+import { 
   scanText, 
   groupSimilarEntities, 
   anonymizeText,
@@ -25,6 +44,8 @@ import {
   getNextPseudonym,
   cleanName,
   superNormalize,
+  generateId,
+  deduplicateEntities,
   PIIEntity,
   PII_COLORS,
   Safelist
@@ -32,7 +53,7 @@ import {
 
 const ORDERED_PII_TYPES = (() => {
   const types = Object.keys(PII_COLORS);
-  const priority = ['NOME', 'ADVOGADO', 'JUIZ', 'AUTOR', 'COLETIVA'];
+  const priority = ['NOME', 'ADVOGADO', 'JUIZ', 'AUTOR', 'COLETIVA', 'HEADER'];
   
   return types.sort((a, b) => {
     const aIdx = priority.indexOf(a);
@@ -55,21 +76,49 @@ interface FileData {
   name: string;
   type: string;
   content: string;
+  htmlContent?: string;
+  positions?: { start: number, end: number, page: number, y: number }[];
   rawFile: File;
   status: 'pending' | 'processing' | 'done' | 'error';
 }
 
-const PDFPage = memo(({ file, pageNum, allEntities, selectedEntityId, selectedIds, onVisible }: { 
+interface ExportSettings {
+  format: 'pdf' | 'docx' | 'txt';
+  removeHeadersFooters: boolean;
+  footnotesAtEnd: boolean;
+  preserveFormatting: boolean;
+}
+
+const PDFPage = memo(({ 
+  file, 
+  pageNum, 
+  allEntities, 
+  selectedEntityId, 
+  selectedIds, 
+  onVisible,
+  selectionMode,
+  onAreaSelected,
+  headerZones,
+  footerZones
+}: { 
   file: File, 
   pageNum: number, 
   allEntities: PIIEntity[],
   selectedEntityId?: string | null,
   selectedIds?: Set<string>,
-  onVisible?: () => void
+  onVisible?: () => void,
+  selectionMode: 'none' | 'header' | 'footer',
+  onAreaSelected: (rect: { top: number; bottom: number; left: number; right: number }, pageNum: number, image?: string) => void,
+  headerZones: { top: number; bottom: number; left: number; right: number; image?: string }[],
+  footerZones: { top: number; bottom: number; left: number; right: number; image?: string }[]
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [markerPos, setMarkerPos] = useState<{ x: number, y: number } | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [startPos, setStartPos] = useState<{ x: number, y: number } | null>(null);
+  const [currentRect, setCurrentRect] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
+  const [viewport, setViewport] = useState<any>(null);
 
   useEffect(() => {
     const observer = new IntersectionObserver((entries) => {
@@ -83,22 +132,34 @@ const PDFPage = memo(({ file, pageNum, allEntities, selectedEntityId, selectedId
     let isMounted = true;
     const render = async () => {
       try {
-        if (!file || typeof file.arrayBuffer !== 'function') {
-          throw new Error("Ficheiro original não carregado. Por favor, recarregue o ficheiro.");
+        if (!file) return;
+        
+        // Robust file object detection
+        let fileToUse: any = file;
+        if (typeof fileToUse.arrayBuffer !== 'function' && fileToUse.rawFile) {
+          fileToUse = fileToUse.rawFile;
         }
-        const arrayBuffer = await file.arrayBuffer();
+
+        if (!fileToUse || typeof fileToUse.arrayBuffer !== 'function') {
+          console.error("Invalid file object in PDFPage:", fileToUse);
+          return;
+        }
+
+        const arrayBuffer = await fileToUse.arrayBuffer();
         const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
         const page = await pdf.getPage(pageNum);
-        const viewport = page.getViewport({ scale: 1.5 });
+        const vp = page.getViewport({ scale: 1.5 });
+        if (isMounted) setViewport(vp);
+        
         const canvas = canvasRef.current;
         if (!canvas || !isMounted) return;
         const context = canvas.getContext('2d');
         if (!context) return;
         
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
+        canvas.height = vp.height;
+        canvas.width = vp.width;
         
-        await (page as any).render({ canvasContext: context, viewport }).promise;
+        await (page as any).render({ canvasContext: context, viewport: vp }).promise;
         
         const textContent = await page.getTextContent();
         
@@ -114,33 +175,71 @@ const PDFPage = memo(({ file, pageNum, allEntities, selectedEntityId, selectedId
           
           textContent.items.forEach((item: any) => {
             if (item.str.toLowerCase().includes(term)) {
-              const [x, y] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+              const [x, y] = vp.convertToViewportPoint(item.transform[4], item.transform[5]);
               const fontHeight = Math.sqrt(item.transform[2] * item.transform[2] + item.transform[3] * item.transform[3]);
               
               context.fillRect(
                 x, 
-                y - (fontHeight * viewport.scale), 
-                item.width * viewport.scale, 
-                fontHeight * viewport.scale * 1.2
+                y - (fontHeight * vp.scale), 
+                item.width * vp.scale, 
+                fontHeight * vp.scale * 1.2
               );
               
               if (isSelected) {
                 if (!foundMarker && entity.id === selectedEntityId) {
-                  setMarkerPos({ x, y: y - (fontHeight * viewport.scale) });
+                  setMarkerPos({ x, y: y - (fontHeight * vp.scale) });
                   foundMarker = true;
                 }
                 context.strokeStyle = '#EAB308';
                 context.lineWidth = 2;
                 context.strokeRect(
                   x, 
-                  y - (fontHeight * viewport.scale), 
-                  item.width * viewport.scale, 
-                  fontHeight * viewport.scale * 1.2
+                  y - (fontHeight * vp.scale), 
+                  item.width * vp.scale, 
+                  fontHeight * vp.scale * 1.2
                 );
               }
             }
           });
         });
+
+        // Draw existing zones
+        headerZones.forEach(zone => {
+          context.fillStyle = 'rgba(239, 68, 68, 0.2)'; // Red for header
+          context.strokeStyle = 'rgba(239, 68, 68, 0.5)';
+          context.lineWidth = 1;
+          context.fillRect(
+            zone.left * vp.width,
+            zone.top * vp.height,
+            (zone.right - zone.left) * vp.width,
+            (zone.bottom - zone.top) * vp.height
+          );
+          context.strokeRect(
+            zone.left * vp.width,
+            zone.top * vp.height,
+            (zone.right - zone.left) * vp.width,
+            (zone.bottom - zone.top) * vp.height
+          );
+        });
+
+        footerZones.forEach(zone => {
+          context.fillStyle = 'rgba(59, 130, 246, 0.2)'; // Blue for footer
+          context.strokeStyle = 'rgba(59, 130, 246, 0.5)';
+          context.lineWidth = 1;
+          context.fillRect(
+            zone.left * vp.width,
+            zone.top * vp.height,
+            (zone.right - zone.left) * vp.width,
+            (zone.bottom - zone.top) * vp.height
+          );
+          context.strokeRect(
+            zone.left * vp.width,
+            zone.top * vp.height,
+            (zone.right - zone.left) * vp.width,
+            (zone.bottom - zone.top) * vp.height
+          );
+        });
+
         if (!foundMarker) setMarkerPos(null);
       } catch (err) {
         console.error("Error rendering PDF page:", err);
@@ -148,11 +247,104 @@ const PDFPage = memo(({ file, pageNum, allEntities, selectedEntityId, selectedId
     };
     render();
     return () => { isMounted = false; };
-  }, [file, pageNum, allEntities, selectedEntityId, selectedIds]);
+  }, [file, pageNum, allEntities, selectedEntityId, selectedIds, headerZones, footerZones]);
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (selectionMode === 'none') return;
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    setIsDrawing(true);
+    setStartPos({ x, y });
+    console.log(`MouseDown at ${x}, ${y} (Mode: ${selectionMode})`);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDrawing || !startPos) return;
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    setCurrentRect({
+      x: Math.min(x, startPos.x),
+      y: Math.min(y, startPos.y),
+      w: Math.abs(x - startPos.x),
+      h: Math.abs(y - startPos.y)
+    });
+  };
+
+  const handleMouseUp = () => {
+    if (!isDrawing || !currentRect || !viewport) {
+      setIsDrawing(false);
+      setStartPos(null);
+      setCurrentRect(null);
+      return;
+    }
+
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    // Convert to percentage coordinates based on DISPLAYED size
+    const zoneRect = {
+      top: currentRect.y / rect.height,
+      bottom: (currentRect.y + currentRect.h) / rect.height,
+      left: currentRect.x / rect.width,
+      right: (currentRect.x + currentRect.w) / rect.width
+    };
+
+    // Capture screenshot of the selected area
+    let screenshot: string | undefined;
+    const canvas = canvasRef.current;
+    if (canvas) {
+      try {
+        const tempCanvas = document.createElement('canvas');
+        const sx = currentRect.x * (canvas.width / rect.width);
+        const sy = currentRect.y * (canvas.height / rect.height);
+        const sw = currentRect.w * (canvas.width / rect.width);
+        const sh = currentRect.h * (canvas.height / rect.height);
+        
+        tempCanvas.width = sw;
+        tempCanvas.height = sh;
+        const tempCtx = tempCanvas.getContext('2d');
+        if (tempCtx) {
+          tempCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+          screenshot = tempCanvas.toDataURL('image/png');
+        }
+      } catch (err) {
+        console.error("Error capturing zone screenshot:", err);
+      }
+    }
+
+    console.log('Area Selected (Percentage):', zoneRect, 'Page:', pageNum);
+    onAreaSelected(zoneRect, pageNum, screenshot);
+    setIsDrawing(false);
+    setStartPos(null);
+    setCurrentRect(null);
+  };
 
   return (
-    <div ref={containerRef} className="relative">
+    <div 
+      ref={containerRef} 
+      className={`relative ${selectionMode !== 'none' ? 'cursor-crosshair' : ''}`}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+    >
       <canvas ref={canvasRef} className="max-w-full h-auto" />
+      {currentRect && (
+        <div 
+          className="absolute border-2 pointer-events-none z-10"
+          style={{
+            left: currentRect.x,
+            top: currentRect.y,
+            width: currentRect.w,
+            height: currentRect.h,
+            borderColor: selectionMode === 'header' ? 'rgba(239, 68, 68, 0.8)' : 'rgba(59, 130, 246, 0.8)',
+            backgroundColor: selectionMode === 'header' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(59, 130, 246, 0.1)'
+          }}
+        />
+      )}
       {markerPos && (
         <div 
           id="pdf-active-marker"
@@ -169,14 +361,30 @@ const PDFPage = memo(({ file, pageNum, allEntities, selectedEntityId, selectedId
   );
 });
 
-const DocumentViewer = memo(({ file, entities, selectedEntityId, selectedIds, setPendingManualTerm, globalKnowledge, safelist }: { 
+const DocumentViewer = memo(({ 
+  file, 
+  entities, 
+  selectedEntityId, 
+  selectedIds, 
+  setPendingManualTerm, 
+  globalKnowledge, 
+  safelist,
+  selectionMode,
+  onAreaSelected,
+  headerZones,
+  footerZones
+}: { 
   file: FileData | null, 
   entities: PIIEntity[],
   selectedEntityId?: string | null,
   selectedIds: Set<string>,
   setPendingManualTerm: (term: { text: string, x: number, y: number } | null) => void,
   globalKnowledge: Record<string, string>,
-  safelist: Safelist
+  safelist: Safelist,
+  selectionMode: 'none' | 'header' | 'footer',
+  onAreaSelected: (rect: { top: number; bottom: number; left: number; right: number }, pageNum: number, image?: string) => void,
+  headerZones: { top: number; bottom: number; left: number; right: number; image?: string }[],
+  footerZones: { top: number; bottom: number; left: number; right: number; image?: string }[]
 }) => {
   const [pages, setPages] = useState<number[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -337,6 +545,10 @@ const DocumentViewer = memo(({ file, entities, selectedEntityId, selectedIds, se
                 selectedEntityId={selectedEntityId}
                 selectedIds={selectedIds}
                 onVisible={() => setCurrentPage(pageNum)}
+                selectionMode={selectionMode}
+                onAreaSelected={onAreaSelected}
+                headerZones={headerZones}
+                footerZones={footerZones}
               />
               <div className="absolute top-2 left-2 bg-black/60 text-white text-[9px] font-bold px-2 py-1 rounded backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity">
                 PÁG. {pageNum}
@@ -638,17 +850,51 @@ export default function App() {
   const [pendingManualTerm, setPendingManualTerm] = useState<{ text: string, x: number, y: number } | null>(null);
   const [copiedPseudonym, setCopiedPseudonym] = useState<string | null>(null);
   const [showMergeModal, setShowMergeModal] = useState(false);
+  const [mergeSearch, setMergeSearch] = useState('');
+  const [showAllMergeOptions, setShowAllMergeOptions] = useState(false);
+
+  const mergeOptions = useMemo(() => {
+    if (!editingEntity) return [];
+    
+    const baseEntities = entities.filter(e => !selectedIds.has(e.id));
+    
+    // Group by groupId or id
+    const groups = baseEntities.reduce((acc, e) => {
+      const key = e.groupId || e.id;
+      if (!acc.find(item => (item.groupId || item.id) === key)) {
+        acc.push(e);
+      }
+      return acc;
+    }, [] as PIIEntity[]);
+
+    if (showAllMergeOptions) return groups;
+
+    // Filter by search or by similarity to editingEntity
+    const searchLower = mergeSearch.toLowerCase().trim();
+    const entityLower = editingEntity.original.toLowerCase().trim();
+    
+    return groups.filter(g => {
+      const gLower = g.original.toLowerCase();
+      if (searchLower) return gLower.includes(searchLower) || g.pseudonym.toLowerCase().includes(searchLower);
+      
+      // Default similarity: contains the text or shares words
+      return gLower.includes(entityLower) || entityLower.includes(gLower);
+    });
+  }, [entities, selectedIds, editingEntity, mergeSearch, showAllMergeOptions]);
   const [showExceptionsModal, setShowExceptionsModal] = useState(false);
   const [showManualModal, setShowManualModal] = useState(false);
   const [showAmbiguityModal, setShowAmbiguityModal] = useState(false);
   const [ambiguousEntities, setAmbiguousEntities] = useState<PIIEntity[]>([]);
-  const [exceptionsTab, setExceptionsTab] = useState<'EXCECAO' | 'JUIZ' | 'AUTOR' | 'SAFELIST'>('EXCECAO');
+  const [exceptionsTab, setExceptionsTab] = useState<'EXCECAO' | 'JUIZ' | 'AUTOR' | 'COLETIVA' | 'SAFELIST' | 'HEADER'>('EXCECAO');
   const [knowledgeSearch, setKnowledgeSearch] = useState('');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [splitView, setSplitView] = useState(false);
   const [reviewMode, setReviewMode] = useState(false);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+  const [headerZones, setHeaderZones] = useState<{ top: number; bottom: number; left: number; right: number; image?: string }[]>([]);
+  const [footerZones, setFooterZones] = useState<{ top: number; bottom: number; left: number; right: number; image?: string }[]>([]);
+  const [selectionMode, setSelectionMode] = useState<'none' | 'header' | 'footer'>('none');
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [history, setHistory] = useState<{ entities: PIIEntity[], files: FileData[], ambiguousEntities: PIIEntity[] }[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -894,8 +1140,11 @@ export default function App() {
       try {
         const { files: savedFiles, entities: savedEntities } = JSON.parse(saved);
         if (savedFiles && savedEntities) {
+          // Deduplicate entities by ID to prevent key collision errors
+          const uniqueEntities = deduplicateEntities(savedEntities as PIIEntity[]);
+
           setFiles(savedFiles);
-          setEntities(savedEntities);
+          setEntities(uniqueEntities);
         }
       } catch (e) {
         console.error("Error loading saved state", e);
@@ -927,7 +1176,7 @@ export default function App() {
     if (!uploadedFiles) return;
 
     const newFiles: FileData[] = Array.from(uploadedFiles).map(file => ({
-      id: Math.random().toString(36).substring(7),
+      id: generateId(),
       name: (file as File).name,
       type: (file as File).type,
       content: '',
@@ -951,10 +1200,17 @@ export default function App() {
         setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, status: 'processing' } : f));
         
         let text = '';
+        let htmlContent = '';
+        let positions: { start: number, end: number, page: number, y: number }[] = [];
         if (fileData.type === 'application/pdf') {
-          text = await extractTextFromPDF(fileData.rawFile);
+          const pdfData = await extractTextAndHtmlFromPDF(fileData.rawFile);
+          text = pdfData.text;
+          htmlContent = pdfData.html;
+          positions = pdfData.positions;
         } else if (fileData.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || fileData.name.endsWith('.docx')) {
-          text = await extractTextFromDocx(fileData.rawFile);
+          const docxData = await extractTextAndHtmlFromDocx(fileData.rawFile);
+          text = docxData.text;
+          htmlContent = docxData.html;
         } else if (fileData.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || fileData.name.endsWith('.xlsx')) {
           text = await extractTextFromXlsx(fileData.rawFile);
         } else {
@@ -962,12 +1218,22 @@ export default function App() {
           text = await fileData.rawFile.text();
         }
 
-        const fileEntities = scanText(text, fileData.id, allNewEntities, isRelated, globalKnowledge, safelist);
-        console.log(`Found ${fileEntities.length} entities in file ${fileData.name}`);
-        allNewEntities = [...allNewEntities, ...fileEntities];
+        const fileEntities = scanText(text, fileData.id, allNewEntities, isRelated, globalKnowledge, safelist, positions);
+        
+        // Merge entities correctly to avoid duplicates
+        const newOnes = fileEntities.filter(fe => !allNewEntities.some(ae => ae.id === fe.id));
+        const updatedOnes = fileEntities.filter(fe => allNewEntities.some(ae => ae.id === fe.id));
+        
+        allNewEntities = allNewEntities.map(ae => {
+          const updated = updatedOnes.find(uo => uo.id === ae.id);
+          return updated || ae;
+        });
+        allNewEntities = deduplicateEntities([...allNewEntities, ...newOnes]);
 
         fileData.content = text;
-        setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, content: text, status: 'done' } : f));
+        fileData.htmlContent = htmlContent;
+        fileData.positions = positions;
+        setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, content: text, htmlContent, positions, status: 'done' } : f));
       } catch (error) {
         console.error(`Error processing file ${fileData.name}:`, error);
         setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, status: 'error' } : f));
@@ -981,7 +1247,12 @@ export default function App() {
 
     const updatedFiles = files.map(f => {
       const processed = filesToProcess.find(p => p.id === f.id);
-      if (processed) return { ...f, content: (processed as any).content, status: 'done' };
+      if (processed) return { 
+        ...f, 
+        content: (processed as any).content, 
+        htmlContent: (processed as any).htmlContent,
+        status: 'done' 
+      };
       return f;
     });
 
@@ -999,49 +1270,34 @@ export default function App() {
     setIsProcessing(false);
   };
 
-  const extractTextFromDocx = async (file: File): Promise<string> => {
+  const extractTextAndHtmlFromDocx = async (file: File): Promise<{ text: string, html: string }> => {
     try {
       const arrayBuffer = await file.arrayBuffer();
-      const zip = await JSZip.loadAsync(arrayBuffer);
-      const docXml = await zip.file("word/document.xml")?.async("string");
-      if (!docXml) throw new Error("Could not find word/document.xml");
       
-      // Simple XML to text extraction
-      const parser = new DOMParser();
-      const xmlDoc = parser.parseFromString(docXml, "text/xml");
-      const paragraphs = xmlDoc.getElementsByTagName("w:p");
-      let text = "";
-      for (let i = 0; i < paragraphs.length; i++) {
-        const texts = paragraphs[i].getElementsByTagName("w:t");
-        for (let j = 0; j < texts.length; j++) {
-          text += texts[j].textContent;
-        }
-        text += "\n";
-      }
-      console.log('DOCX extracted text length:', text.length);
+      // Get HTML for formatting preservation with custom style map
+      const options = {
+        styleMap: [
+          "u => u",
+          "b => strong",
+          "i => em",
+          "strike => s",
+          "p[style-name='Footnote Text'] => p.footnote-text",
+          "r[style-name='Footnote Reference'] => span.footnote-reference"
+        ]
+      };
       
-      // If manual extraction is too short or empty, try mammoth as fallback
-      if (text.trim().length < 10) {
-        try {
-          const result = await mammoth.extractRawText({ arrayBuffer });
-          return result.value;
-        } catch (e) {
-          console.warn('Mammoth fallback failed:', e);
-        }
-      }
+      const htmlResult = await mammoth.convertToHtml({ arrayBuffer }, options);
+      const html = htmlResult.value;
       
-      return text;
+      // Get raw text for scanning
+      const textResult = await mammoth.extractRawText({ arrayBuffer });
+      const text = textResult.value;
+      
+      return { text, html };
     } catch (error) {
-      console.error('Error extracting text from DOCX:', error);
-      // Try mammoth as absolute fallback
-      try {
-        const arrayBuffer = await file.arrayBuffer();
-        const result = await mammoth.extractRawText({ arrayBuffer });
-        return result.value;
-      } catch (mError) {
-        console.error('Mammoth also failed:', mError);
-        throw error;
-      }
+      console.error('Error extracting from DOCX:', error);
+      const text = await file.text();
+      return { text, html: text };
     }
   };
 
@@ -1056,40 +1312,185 @@ export default function App() {
     return fullText;
   };
 
-  const extractTextFromPDF = async (file: File): Promise<string> => {
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
-    let fullText = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      
-      // Sort items by Y descending (top to bottom), then X ascending (left to right)
-      // Filter only items that have text (str property)
-      const items = (textContent.items as any[])
-        .filter(item => typeof item.str === 'string')
-        .sort((a, b) => {
-          const yDiff = b.transform[5] - a.transform[5];
-          if (Math.abs(yDiff) < 5) { // Same line (threshold of 5 points)
-            return a.transform[4] - b.transform[4];
+  const extractTextAndHtmlFromPDF = async (file: File): Promise<{ text: string, html: string, positions: { start: number, end: number, page: number, y: number }[] }> => {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+      let fullText = '';
+      let fullHtml = '';
+      const positions: { start: number, end: number, page: number, y: number }[] = [];
+
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const styles = textContent.styles || {};
+        const viewport = page.getViewport({ scale: 1.0 });
+        const pageHeight = viewport.height;
+        
+        const items = (textContent.items as any[])
+          .filter(item => typeof item.str === 'string')
+          .sort((a, b) => {
+            const yDiff = b.transform[5] - a.transform[5];
+            if (Math.abs(yDiff) < 2) {
+              return a.transform[4] - b.transform[4];
+            }
+            return yDiff;
+          });
+
+        if (items.length === 0) continue;
+
+        // 1. Group items into lines
+        const lines: { items: any[], y: number, fontSize: number, xStart: number, xEnd: number }[] = [];
+        let currentLine: any[] = [];
+        let lastY = -1;
+
+        items.forEach(item => {
+          const y = item.transform[5];
+          if (lastY === -1 || Math.abs(y - lastY) < 2) {
+            currentLine.push(item);
+          } else {
+            const fontSize = Math.abs(currentLine[0].transform[3]);
+            const xStart = Math.min(...currentLine.map(it => it.transform[4]));
+            const xEnd = Math.max(...currentLine.map(it => it.transform[4] + (it.width || 0)));
+            lines.push({ items: currentLine, y: lastY, fontSize, xStart, xEnd });
+            currentLine = [item];
           }
-          return yDiff;
+          lastY = y;
+        });
+        if (currentLine.length > 0) {
+          const fontSize = Math.abs(currentLine[0].transform[3]);
+          const xStart = Math.min(...currentLine.map(it => it.transform[4]));
+          const xEnd = Math.max(...currentLine.map(it => it.transform[4] + (it.width || 0)));
+          lines.push({ items: currentLine, y: lastY, fontSize, xStart, xEnd });
+        }
+
+        // 2. Identify Margins with safety
+        const xStarts = lines.filter(l => l.items[0].str.trim().length > 3).map(l => l.xStart);
+        const xEnds = lines.filter(l => l.items[0].str.trim().length > 3).map(l => l.xEnd);
+        const leftMargin = xStarts.length > 0 ? Math.min(...xStarts) : 50;
+        const rightMargin = xEnds.length > 0 ? Math.max(...xEnds) : 550;
+        const lineFullWidth = Math.max(100, rightMargin - leftMargin);
+
+        // 3. Group lines into paragraphs using Visual Logic
+        const avgFontSize = lines.reduce((acc, l) => acc + l.fontSize, 0) / lines.length;
+        const paragraphs: { lines: any[], isFootnote: boolean, y: number }[] = [];
+        let currentParagraph: { lines: any[], isFootnote: boolean, y: number } | null = null;
+
+        lines.forEach((line, idx) => {
+          // Footnote detection: bottom 28% of page and smaller font or starts with digit
+          const isBottom = (pageHeight - line.y) < pageHeight * 0.28;
+          const isSmall = line.fontSize < avgFontSize * 0.9;
+          const startsWithDigit = /^\d+[\s\.]/.test(line.items[0].str.trim());
+          const looksLikeFootnote = (isSmall && isBottom) || (startsWithDigit && isBottom);
+
+          const prevLine = idx > 0 ? lines[idx - 1] : null;
+          const yGap = prevLine ? Math.abs(line.y - prevLine.y) : 0;
+          
+          // Visual Paragraph Logic:
+          const isIndented = line.xStart > leftMargin + (lineFullWidth * 0.08);
+          const prevWasShort = prevLine && prevLine.xEnd < rightMargin - (lineFullWidth * 0.15);
+          
+          const isNewPara = !prevLine || 
+                           yGap > line.fontSize * 1.7 || 
+                           isIndented || 
+                           prevWasShort ||
+                           Math.abs(line.fontSize - prevLine.fontSize) > 1.2 ||
+                           looksLikeFootnote !== currentParagraph?.isFootnote;
+
+          if (isNewPara) {
+            currentParagraph = { lines: [line], isFootnote: looksLikeFootnote, y: line.y };
+            paragraphs.push(currentParagraph);
+          } else {
+            currentParagraph?.lines.push(line);
+          }
         });
 
-      let lastY = -1;
-      let pageText = '';
-      for (const item of items) {
-        if (lastY !== -1 && Math.abs(item.transform[5] - lastY) > 5) {
-          pageText += '\n';
-        } else if (lastY !== -1) {
-          pageText += ' ';
-        }
-        pageText += item.str;
-        lastY = item.transform[5];
+        // 4. Generate HTML from paragraphs and track positions
+        paragraphs.forEach(p => {
+          const pClass = p.isFootnote ? 'pdf-footnote' : '';
+          const pFontSize = p.lines[0].fontSize;
+          const pFontName = p.lines[0].items[0].fontName;
+          const pFontFamily = styles[pFontName]?.fontFamily || 'Times New Roman';
+          
+          const normalizedY = (pageHeight - p.y) / pageHeight;
+          let pHtml = `<p class="${pClass}" data-y="${normalizedY}" style="text-align: justify; margin-bottom: 10pt; font-family: '${pFontFamily}'; font-size: ${pFontSize}pt;">`;
+          let pText = '';
+
+          p.lines.forEach((line, lIdx) => {
+            line.items.forEach((item: any, iIdx: number) => {
+              const style = styles[item.fontName];
+              const fontName = (item.fontName || '').toLowerCase();
+              const fontFamily = (style?.fontFamily || '').toLowerCase();
+              
+              // Ultra-aggressive style detection
+              const isBold = fontFamily.includes('bold') || fontName.includes('bold') || 
+                             fontName.includes('bd') || fontName.includes('-b') || 
+                             fontName.includes('_b') || fontName.includes('black') || 
+                             fontName.includes('heavy') || fontName.includes('w7') || 
+                             fontName.includes('w8') || fontName.includes('w9') || 
+                             fontName.includes('semibold') || fontName.includes('medium') || 
+                             fontName.includes('700') || fontName.includes('800') || fontName.includes('900');
+              
+              const isItalic = fontFamily.includes('italic') || fontFamily.includes('oblique') || 
+                               fontName.includes('italic') || fontName.includes('oblique') || 
+                               fontName.includes('it') || fontName.includes('-i') || 
+                               fontName.includes('_i') || fontName.includes('slanted');
+              
+              const isUnderline = fontName.includes('underline') || fontName.includes('ul') || fontFamily.includes('underline');
+
+              let itemText = item.str;
+              pText += itemText;
+              
+              let styledText = itemText;
+              if (isBold) styledText = `<strong>${styledText}</strong>`;
+              if (isItalic) styledText = `<em>${styledText}</em>`;
+              if (isUnderline) styledText = `<u>${styledText}</u>`;
+              
+              pHtml += styledText;
+              if (iIdx < line.items.length - 1) {
+                pHtml += ' ';
+                pText += ' ';
+              }
+            });
+            if (lIdx < p.lines.length - 1) {
+              pHtml += ' '; 
+              pText += ' ';
+            }
+          });
+
+          pHtml += '</p>';
+          
+          // Track position for this paragraph
+          const start = fullText.length;
+          fullText += pText + '\n\n';
+          const end = fullText.length;
+          
+          positions.push({
+            start,
+            end,
+            page: i,
+            y: (pageHeight - p.y) / pageHeight // Normalized y (0 at top, 1 at bottom)
+          });
+          
+          fullHtml += pHtml;
+        });
       }
-      fullText += pageText + '\n\n';
+      
+      return { text: fullText, html: fullHtml, positions };
+    } catch (err) {
+      console.error("Error in extractTextAndHtmlFromPDF:", err);
+      try {
+        const text = await file.text();
+        return { text, html: text.split('\n').map(l => `<p>${l}</p>`).join(''), positions: [] };
+      } catch (e) {
+        return { text: '', html: '', positions: [] };
+      }
     }
-    return fullText;
+  };
+
+  const extractTextFromPDF = async (file: File): Promise<string> => {
+    const data = await extractTextAndHtmlFromPDF(file);
+    return data.text;
   };
 
   // --- Entity Management ---
@@ -1516,7 +1917,7 @@ export default function App() {
             if (entity.groupId) affectedGroupIds.add(entity.groupId);
 
             parts.forEach(part => {
-              const id = Math.random().toString(36).substring(7);
+              const id = generateId();
               const pseudonym = getNextPseudonym(entity.type, [...prev, ...next]);
               next.push({
                 ...entity,
@@ -1556,7 +1957,7 @@ export default function App() {
     setSplitResults(parts.map(p => ({
       original: p,
       type: entity.type,
-      id: Math.random().toString(36).substring(7)
+      id: generateId()
     })));
   };
 
@@ -1573,7 +1974,7 @@ export default function App() {
     }
 
     splitResults.forEach(res => {
-      const id = `split-${editingEntity.id}-${Math.random().toString(36).substring(7)}`;
+      const id = `split-${editingEntity.id}-${generateId()}`;
       const pseudonym = getNextPseudonym(res.type, currentEntities);
       const newEnt: PIIEntity = {
         id,
@@ -1634,7 +2035,7 @@ export default function App() {
             parts.forEach(part => {
               next.push({
                 ...entity,
-                id: Math.random().toString(36).substring(7),
+                id: generateId(),
                 original: part,
                 pseudonym: getNextPseudonym(entity.type, [...prev, ...next]),
                 treated: false,
@@ -1708,7 +2109,7 @@ export default function App() {
           if (parts.length >= 2) {
             splitOccurred = true;
             parts.forEach(part => {
-              const id = Math.random().toString(36).substring(7);
+              const id = generateId();
               const pseudonym = getNextPseudonym(entity.type, [...prev, ...next]);
               next.push({
                 ...entity,
@@ -1930,12 +2331,20 @@ export default function App() {
       });
       return next;
     });
-    const typeName = type === 'EXCECAO' ? 'exceções' : type === 'JUIZ' ? 'juízes' : 'autores';
+    
+    if (type === 'HEADER') {
+      setHeaderZones([]);
+      setFooterZones([]);
+    }
+
+    const typeName = type === 'EXCECAO' ? 'exceções' : type === 'JUIZ' ? 'juízes' : type === 'AUTOR' ? 'autores' : type === 'HEADER' ? 'cabeçalhos' : 'coletivas';
     showToast(`Lista de ${typeName} limpa com sucesso.`, "info");
   };
 
   const handleClearAllGlobalKnowledge = () => {
     setGlobalKnowledge({});
+    setHeaderZones([]);
+    setFooterZones([]);
     showToast("Todo o conhecimento global foi limpo.", "info");
   };
 
@@ -2036,7 +2445,7 @@ export default function App() {
     setEntities(prev => {
       const next = prev.map(e => {
         if (e.enabled && !e.ignored && !e.treated) {
-          return { ...e, treated: true };
+          return { ...e, treated: true, enabled: true };
         }
         return e;
       });
@@ -2120,7 +2529,7 @@ export default function App() {
       const foundIdsMap = new Map<string, PIIEntity>();
       
       for (const file of files) {
-        const newEntities = scanText(file.content, file.id, entities, isRelated, sessionKnowledge, safelist);
+        const newEntities = scanText(file.content, file.id, entities, isRelated, sessionKnowledge, safelist, file.positions || []);
         
         // Filter out new entities that are already in the entities list and treated/ignored
         const filteredNew = newEntities.filter(ne => {
@@ -2554,29 +2963,134 @@ export default function App() {
     showToast(`${exceptionsToMove.length} exceções transferidas para a Safelist.`, "success");
   };
 
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportSettings, setExportSettings] = useState<ExportSettings>({
+    format: 'pdf',
+    removeHeadersFooters: false,
+    footnotesAtEnd: true,
+    preserveFormatting: true
+  });
+
+  const extractTextFromZone = async (rect: { top: number; bottom: number; left: number; right: number }, type: string, pageNum: number) => {
+    const fileData = files.find(f => f.id === selectedFileId);
+    if (!fileData || !fileData.rawFile) return;
+
+    try {
+      const arrayBuffer = await fileData.rawFile.arrayBuffer();
+      const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+      
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 1.0 });
+      const textContent = await page.getTextContent();
+      
+      const extractedTexts: string[] = [];
+      
+      textContent.items.forEach((item: any) => {
+        const [x, y] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+        
+        // Convert to percentage
+        const itemTop = y / viewport.height;
+        const itemLeft = x / viewport.width;
+        
+        // Check if item is inside the rect
+        if (itemTop >= rect.top && itemTop <= rect.bottom &&
+            itemLeft >= rect.left && itemLeft <= rect.right) {
+          if (item.str.trim()) {
+            extractedTexts.push(item.str.trim());
+          }
+        }
+      });
+
+      console.log('Extracted texts from zone:', extractedTexts);
+
+      if (extractedTexts.length > 0) {
+        // Add each line as a separate header pattern
+        extractedTexts.forEach(text => {
+          if (text.length > 2) {
+            setGlobalKnowledge(prev => ({
+              ...prev,
+              [text]: type
+            }));
+          }
+        });
+
+        // Also add the combined text just in case
+        const fullText = extractedTexts.join(' ');
+        if (fullText.length > 3) {
+          setGlobalKnowledge(prev => ({
+            ...prev,
+            [fullText]: type
+          }));
+          
+          // If it's a signature or process line, also add the prefix
+          if (fullText.toLowerCase().includes('processo:')) {
+            setGlobalKnowledge(prev => ({ ...prev, ['Processo:']: type }));
+          }
+          if (fullText.toLowerCase().includes('referência:')) {
+            setGlobalKnowledge(prev => ({ ...prev, ['Referência:']: type }));
+          }
+          if (fullText.toLowerCase().includes('assinado')) {
+            setGlobalKnowledge(prev => ({ ...prev, ['Assinado']: type }));
+          }
+        }
+        
+        // Visual feedback
+        const msg = type === 'HEADER' ? 'Zona de Cabeçalho/Rodapé adicionada' : 'Zona adicionada';
+        const toast = document.createElement('div');
+        toast.className = 'fixed bottom-4 right-4 bg-gray-800 text-white px-4 py-2 rounded-lg shadow-lg z-[100] text-sm animate-in fade-in slide-in-from-bottom-4';
+        toast.textContent = msg;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+      }
+    } catch (err) {
+      console.error("Error extracting text from zone:", err);
+    }
+  };
+
   const handleExport = async () => {
     setIsProcessing(true);
+    setShowExportModal(false);
     const zip = new JSZip();
-    const processedFiles: { name: string, data: Uint8Array | string, isPdf: boolean }[] = [];
+    const processedFiles: { name: string, data: Uint8Array | string | Blob, isPdf: boolean, format: string }[] = [];
     
     try {
       for (const fileData of files) {
         if (fileData.status !== 'done') continue;
 
-        if (fileData.type === 'application/pdf') {
-          const pdfBytes = await exportAnonymizedPDFBytes(fileData);
-          processedFiles.push({ name: `anonymized_${fileData.name}`, data: pdfBytes, isPdf: true });
-          zip.file(`anonymized_${fileData.name}`, pdfBytes);
+        const baseName = fileData.name.replace(/\.[^/.]+$/, "");
+        
+        if (exportSettings.format === 'pdf') {
+          if (exportSettings.preserveFormatting && (fileData.type === 'application/pdf' || fileData.htmlContent)) {
+            const pdfBlob = await createPdfFromHtml(fileData.htmlContent || '', fileData.name, fileData.id);
+            processedFiles.push({ name: `${baseName}_anon.pdf`, data: pdfBlob, isPdf: true, format: 'pdf' });
+            zip.file(`${baseName}_anon.pdf`, pdfBlob);
+          } else if (fileData.type === 'application/pdf') {
+            const pdfBytes = await exportAnonymizedPDFBytes(fileData);
+            processedFiles.push({ name: `${baseName}_anon.pdf`, data: pdfBytes, isPdf: true, format: 'pdf' });
+            zip.file(`${baseName}_anon.pdf`, pdfBytes);
+          } else {
+            const pdfBlob = await generateAnonymizedPdfFromText(fileData);
+            processedFiles.push({ name: `${baseName}_anon.pdf`, data: pdfBlob, isPdf: true, format: 'pdf' });
+            zip.file(`${baseName}_anon.pdf`, pdfBlob);
+          }
+        } else if (exportSettings.format === 'docx') {
+          const docxBlob = await generateAnonymizedDocx(fileData);
+          processedFiles.push({ name: `${baseName}_anon.docx`, data: docxBlob, isPdf: false, format: 'docx' });
+          zip.file(`${baseName}_anon.docx`, docxBlob);
         } else {
           const anonymizedText = anonymizeText(fileData.content, entities);
-          processedFiles.push({ name: `anonymized_${fileData.name}.txt`, data: anonymizedText, isPdf: false });
-          zip.file(`anonymized_${fileData.name}.txt`, anonymizedText);
+          processedFiles.push({ name: `${baseName}_anon.txt`, data: anonymizedText, isPdf: false, format: 'txt' });
+          zip.file(`${baseName}_anon.txt`, anonymizedText);
         }
       }
 
       if (processedFiles.length === 1) {
         const file = processedFiles[0];
-        const blob = new Blob([file.data], { type: file.isPdf ? 'application/pdf' : 'text/plain' });
+        const blob = file.data instanceof Blob ? file.data : new Blob([file.data], { 
+          type: file.format === 'pdf' ? 'application/pdf' : 
+                file.format === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 
+                'text/plain' 
+        });
         saveAs(blob, file.name);
         showToast("Documento exportado com sucesso.", "success");
       } else if (processedFiles.length > 1) {
@@ -2592,6 +3106,604 @@ export default function App() {
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const generateAnonymizedPdfFromText = async (fileData: FileData): Promise<Blob> => {
+    const doc = new jsPDF();
+    const anonymizedText = anonymizeText(fileData.content, entities);
+    
+    const splitText = doc.splitTextToSize(anonymizedText, 180);
+    doc.text(splitText, 15, 20);
+    
+    return doc.output('blob');
+  };
+
+  const generateAnonymizedDocx = async (fileData: FileData): Promise<Blob> => {
+    // Ensure we have HTML content for consistent processing (PDFs, TXT, etc.)
+    let htmlToUse = fileData.htmlContent;
+    if (!htmlToUse && fileData.content) {
+      htmlToUse = fileData.content.split('\n')
+        .map(line => line.trim() ? `<p>${line}</p>` : '')
+        .filter(p => p !== '')
+        .join('');
+    }
+
+    if (exportSettings.preserveFormatting && htmlToUse) {
+      return await createDocxFromHtml(htmlToUse, fileData.name, fileData.id);
+    }
+
+    // Fallback to simple text-based DOCX (should rarely be hit now)
+    const anonymizedText = anonymizeText(fileData.content, entities);
+    const doc = new DocxDocument({
+      sections: [{
+        properties: {},
+        children: anonymizedText.split('\n').map(line => {
+          const trimmed = line.trim();
+          if (!trimmed) return null;
+          
+          // Basic header check even in fallback
+          if (exportSettings.removeHeadersFooters) {
+            const lower = trimmed.toLowerCase();
+            if (lower.includes('processo:') || lower.includes('referência:') || lower.includes('página') || lower.includes('tribunal')) {
+               if (trimmed.length < 100) return null;
+            }
+          }
+
+          return new Paragraph({
+            children: [new TextRun(line)],
+            alignment: line.length > 50 ? AlignmentType.JUSTIFIED : undefined,
+          });
+        }).filter(p => p !== null) as Paragraph[],
+      }],
+    });
+
+    return await Packer.toBlob(doc);
+  };
+
+  const prepareAnonymizedHtml = (html: string, fileId: string): { domDoc: Document, footnotes: Record<string, string> } => {
+    const parser = new DOMParser();
+    const domDoc = parser.parseFromString(html, 'text/html');
+    const footnotes: Record<string, string> = {};
+
+    // Filter entities for this file
+    const fileEntities = entities.filter(e => e.fileIds?.includes(fileId) && e.enabled && !e.ignored);
+    const headerEntities = fileEntities.filter(e => e.type === 'HEADER');
+
+    // Extract footnotes if they exist
+    const footnoteElements = domDoc.querySelectorAll('li[id*="footnote"], div[id*="footnote"], p[id*="footnote"], [class*="footnote"], .pdf-footnote');
+    footnoteElements.forEach(el => {
+      // Skip reference links and container divs
+      const elementId = el.id.toLowerCase();
+      const elementClass = el.className.toLowerCase();
+      if (elementId.includes('ref') || elementClass.includes('ref')) return;
+      if (el.tagName.toLowerCase() === 'div' && el.querySelector('ol, ul')) return;
+      if (el.tagName.toLowerCase() === 'ol' || el.tagName.toLowerCase() === 'ul') return;
+
+      const idMatch = el.id.match(/footnote-(\d+)/) || el.className.match(/footnote-(\d+)/) || el.textContent?.match(/^(\d+)[\.\s]/);
+      const id = idMatch ? idMatch[1] : (el.id && !el.id.includes('footnotes') ? el.id : null);
+      
+      if (!id) return;
+
+      // Remove back-reference arrows and links
+      el.querySelectorAll('a').forEach(a => {
+        const aText = a.textContent || '';
+        if (aText.includes('↑') || a.getAttribute('href')?.includes('ref')) a.remove();
+      });
+
+      const cleanText = el.textContent?.replace(/^\d+[\.\s]*/, '').trim() || '';
+      if (cleanText) {
+        if (!footnotes[id]) {
+          footnotes[id] = cleanText;
+        } else if (footnotes[id] !== cleanText && !footnotes[id].includes(cleanText)) {
+          footnotes[id] += ' ' + cleanText;
+        }
+      }
+      
+      if (exportSettings.footnotesAtEnd) {
+        el.remove();
+      }
+    });
+
+    const dynamicHeaders = Object.entries(globalKnowledge)
+      .filter(([_, type]) => type === 'HEADER')
+      .map(([text]) => text.toLowerCase().trim().replace(/\s+/g, ' '));
+
+    const headerPatterns = [
+      ...dynamicHeaders.map(h => {
+        if (h.includes('processo') || h.includes('referência')) {
+          const prefix = h.split(':')[0].trim();
+          return new RegExp('^' + prefix + ':?', 'i');
+        }
+        const escaped = h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\ /g, '\\s+');
+        return new RegExp(escaped, 'i');
+      }),
+      /^assinado em \d{2}-\d{2}-\d{4}, por/i,
+      /^assinado por:?/i,
+      /^processo:?\s+/i,
+      /^referência:?\s+/i,
+      /tribunal da relação/i,
+      /secção social/i,
+      /campo mártires da pátria/i,
+      /4099-012 porto/i,
+      /^telef:?\s+\d+/i,
+      /^fax:?\s+\d+/i,
+      /^mail:?\s+.*@.*/i,
+      /^página\s+\d+/i,
+      /^pág\.\s+\d+/i,
+      /^folha\s+\d+/i,
+      /tribunal judicial/i,
+      /juízo do trabalho/i,
+      /comarca de/i,
+      /instância central/i,
+      /instância local/i,
+      /secção cível/i,
+      /secção criminal/i,
+      /procuradoria-geral/i,
+      /ministério público/i,
+      /^\d+$/
+    ];
+
+    const normalizeForMatch = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+
+    const processElement = (element: Element) => {
+      const tagName = element.tagName.toLowerCase();
+      
+      if (tagName === 'div' || tagName === 'section' || tagName === 'article') {
+        Array.from(element.children).forEach(child => processElement(child));
+        return;
+      }
+
+      if (tagName === 'p') {
+        const originalText = element.textContent || '';
+        const normalizedText = normalizeForMatch(originalText);
+        
+        if (exportSettings.removeHeadersFooters) {
+          const yPos = parseFloat(element.getAttribute('data-y') || '0.5');
+          const isAtTop = yPos < 0.20;
+          const isAtBottom = yPos > 0.80;
+          
+          const isHeader = isAtTop && (
+            headerPatterns.some(pattern => pattern.test(normalizedText)) || 
+            headerEntities.some(e => normalizedText.includes(normalizeForMatch(e.original))) ||
+            (normalizedText.length < 80 && (
+              normalizedText.includes('porto') || 
+              normalizedText.includes('tribunal') || 
+              normalizedText.includes('relação') ||
+              normalizedText.includes('assinado em') ||
+              normalizedText.includes('referência') ||
+              normalizedText.includes('processo')
+            ))
+          );
+
+          const isFooter = isAtBottom && (
+            headerEntities.some(e => normalizedText.includes(normalizeForMatch(e.original))) ||
+            /^\d+$/.test(normalizedText) ||
+            normalizedText.includes('página') ||
+            normalizedText.includes('pág.') ||
+            normalizedText.includes('folha')
+          );
+          
+          if (isHeader || isFooter) {
+            element.remove();
+            return;
+          }
+        }
+      }
+    };
+
+    Array.from(domDoc.body.children).forEach(child => processElement(child));
+
+    // Post-process: Merge paragraphs that don't end with punctuation
+    // Following the rule: "o word só pode fazer paragrafo depois de um ponto, um ponto de exclamação, um ponto de interrogação ou dois pontos."
+    const paragraphs = Array.from(domDoc.querySelectorAll('p'));
+    for (let i = 0; i < paragraphs.length - 1; i++) {
+      const p = paragraphs[i];
+      const nextP = paragraphs[i + 1];
+      
+      // Skip if either is a footnote reference or special element
+      if (p.className.includes('footnote') || nextP.className.includes('footnote')) continue;
+      
+      const text = p.textContent?.trim() || '';
+      // Check if it ends with . ! ? or : (allowing for closing quotes/parens)
+      if (text && !/[.!?:][\s"”'’)]*$/.test(text)) {
+        // Move all children from nextP to p, adding a space if needed
+        p.appendChild(domDoc.createTextNode(' '));
+        while (nextP.firstChild) {
+          p.appendChild(nextP.firstChild);
+        }
+        nextP.remove();
+        paragraphs.splice(i + 1, 1);
+        i--; // Check the merged paragraph again
+      }
+    }
+    
+    return { domDoc, footnotes };
+  };
+
+  const createPdfFromHtml = async (html: string, originalName: string, fileId: string): Promise<Blob> => {
+    const { domDoc: anonymizedDoc, footnotes } = prepareAnonymizedHtml(html, fileId);
+    
+    // Create a temporary container for jsPDF to render
+    const container = document.createElement('div');
+    container.style.width = '170mm'; // Slightly narrower to ensure it fits with margins
+    container.style.padding = '20mm';
+    container.style.fontFamily = 'Times New Roman, serif';
+    container.style.fontSize = '12pt';
+    container.style.lineHeight = '1.5';
+    container.style.backgroundColor = 'white';
+    container.style.color = 'black';
+    
+    // Clone the body content
+    const bodyClone = anonymizedDoc.body.cloneNode(true) as HTMLElement;
+    
+    // Anonymize all text nodes in the clone
+    const walk = document.createTreeWalker(bodyClone, NodeFilter.SHOW_TEXT, null);
+    let node;
+    while (node = walk.nextNode()) {
+      node.textContent = anonymizeText(node.textContent || '', entities);
+    }
+    
+    container.appendChild(bodyClone);
+
+    // Add footnotes at the end
+    if (exportSettings.footnotesAtEnd && Object.keys(footnotes).length > 0) {
+      const hr = document.createElement('hr');
+      hr.style.marginTop = '20pt';
+      container.appendChild(hr);
+      
+      const title = document.createElement('h2');
+      title.textContent = 'NOTAS DE RODAPÉ';
+      title.style.textAlign = 'center';
+      title.style.fontSize = '14pt';
+      container.appendChild(title);
+      
+      Object.entries(footnotes).forEach(([id, text]) => {
+        const p = document.createElement('p');
+        p.style.fontSize = '10pt';
+        p.style.textAlign = 'justify';
+        p.innerHTML = `<strong>${id}.</strong> ${anonymizeText(text, entities)}`;
+        container.appendChild(p);
+      });
+    }
+
+    // Append to body temporarily (required for some jsPDF rendering)
+    container.style.position = 'absolute';
+    container.style.left = '-9999px';
+    container.style.top = '0';
+    document.body.appendChild(container);
+
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    
+    try {
+      await pdf.html(container, {
+        callback: function (doc) {
+          // No-op, handled by promise
+        },
+        x: 0,
+        y: 0,
+        width: 210, // A4 width
+        windowWidth: 800,
+        autoPaging: 'text',
+        html2canvas: {
+          scale: 2,
+          useCORS: true,
+          logging: false
+        }
+      });
+      
+      document.body.removeChild(container);
+      return pdf.output('blob');
+    } catch (err) {
+      console.error("Error generating PDF from HTML:", err);
+      if (container.parentNode) document.body.removeChild(container);
+      return new Blob([pdf.output()], { type: 'application/pdf' });
+    }
+  };
+
+  const createDocxFromHtml = async (html: string, originalName: string, fileId: string): Promise<Blob> => {
+    const { domDoc: doc, footnotes } = prepareAnonymizedHtml(html, fileId);
+    const children: any[] = [];
+
+    const dynamicHeaders = Object.entries(globalKnowledge)
+      .filter(([_, type]) => type === 'HEADER')
+      .map(([text]) => text.toLowerCase().trim().replace(/\s+/g, ' '));
+
+    const headerPatterns = [
+      ...dynamicHeaders.map(h => {
+        if (h.includes('processo') || h.includes('referência')) {
+          const prefix = h.split(':')[0].trim();
+          return new RegExp('^' + prefix + ':?', 'i');
+        }
+        const escaped = h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\ /g, '\\s+');
+        return new RegExp(escaped, 'i');
+      }),
+      /^assinado em \d{2}-\d{2}-\d{4}, por/i,
+      /^assinado por:?/i,
+      /^processo:?\s+/i,
+      /^referência:?\s+/i,
+      /tribunal da relação/i,
+      /secção social/i,
+      /campo mártires da pátria/i,
+      /4099-012 porto/i,
+      /^telef:?\s+\d+/i,
+      /^fax:?\s+\d+/i,
+      /^mail:?\s+.*@.*/i,
+      /^página\s+\d+/i,
+      /^pág\.\s+\d+/i,
+      /^folha\s+\d+/i,
+      /tribunal judicial/i,
+      /juízo do trabalho/i,
+      /comarca de/i,
+      /instância central/i,
+      /instância local/i,
+      /secção cível/i,
+      /secção criminal/i,
+      /procuradoria-geral/i,
+      /ministério público/i,
+      /^\d+$/
+    ];
+
+    const normalizeForMatch = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+
+    // Process body elements
+    let currentParagraphRuns: any[] = [];
+    
+    const isTerminalPunctuation = (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return true;
+      // Also check for common Portuguese abbreviations or numbers that shouldn't trigger a merge
+      if (trimmed.endsWith('Art.') || trimmed.endsWith('n.º') || trimmed.endsWith('Pág.')) return false;
+      const lastChar = trimmed[trimmed.length - 1];
+      return ['.', '!', '?', ':'].includes(lastChar);
+    };
+
+    const flushParagraph = (alignment = AlignmentType.BOTH, isSpecial: boolean = false) => {
+      if (currentParagraphRuns.length > 0) {
+        children.push(new Paragraph({ 
+          children: [...currentParagraphRuns],
+          alignment: alignment,
+          spacing: { 
+            before: 120, 
+            after: 120, 
+            line: 360, 
+            lineRule: LineRuleType.AUTO 
+          },
+          indent: isSpecial ? undefined : {
+            firstLine: 567, // 1 cm indent (approx 567 twips)
+          }
+        }));
+        currentParagraphRuns = [];
+      }
+    };
+
+    const processElement = (element: Element) => {
+      const tagName = element.tagName.toLowerCase();
+      
+      if (tagName === 'div' || tagName === 'section' || tagName === 'article') {
+        Array.from(element.children).forEach(child => processElement(child));
+        return;
+      }
+
+      if (tagName === 'p') {
+        const originalText = element.textContent || '';
+        const normalizedText = normalizeForMatch(originalText);
+        
+        // Handle standalone asterisks or separators
+        if (normalizedText === '*' || normalizedText === '***' || normalizedText === '---') {
+          flushParagraph(); // Flush accumulated text
+          children.push(new Paragraph({
+            children: [new TextRun({ text: originalText, bold: true })],
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 240, after: 240 }
+          }));
+          return;
+        }
+
+        // Detect citation style (often has large left margin or specific class)
+        const style = element.getAttribute('style') || '';
+        const isCitation = element.className?.toLowerCase().includes('citation') || 
+                          style.includes('margin-left') || 
+                          style.includes('padding-left');
+
+        // Header removal logic
+        if (exportSettings.removeHeadersFooters) {
+          const isHeader = headerPatterns.some(pattern => pattern.test(normalizedText)) || 
+                          (normalizedText.length < 80 && (
+                            normalizedText.includes('porto') || 
+                            normalizedText.includes('tribunal') || 
+                            normalizedText.includes('relação') ||
+                            normalizedText.includes('assinado em')
+                          ));
+          if (isHeader) return;
+        }
+
+        const runs: any[] = [];
+        
+        // Get paragraph-level styles
+        const pStyle = element.getAttribute('style') || '';
+        const pFontSizeMatch = pStyle.match(/font-size:\s*([\d.]+)pt/);
+        const pFontSize = pFontSizeMatch ? parseFloat(pFontSizeMatch[1]) : undefined;
+        const pFontFamilyMatch = pStyle.match(/font-family:\s*'([^']+)'/);
+        const pFontFamily = pFontFamilyMatch ? pFontFamilyMatch[1] : undefined;
+
+        // Recursive function to collect styles and text
+        const processNode = (node: Node, styles: { bold?: boolean, italics?: boolean, underline?: boolean, fontSize?: number, fontFamily?: string }) => {
+          if (node.nodeType === Node.TEXT_NODE) {
+            const content = node.textContent || '';
+            if (content) {
+              runs.push(new TextRun({
+                text: anonymizeText(content, entities),
+                bold: styles.bold,
+                italics: styles.italics,
+                underline: styles.underline ? { type: UnderlineType.SINGLE } : undefined,
+                size: styles.fontSize ? styles.fontSize * 2 : pFontSize ? pFontSize * 2 : 24, // Default 12pt
+                font: styles.fontFamily || pFontFamily || "Times New Roman"
+              }));
+            }
+          } else if (node instanceof Element) {
+            const subTagName = node.tagName.toLowerCase();
+            const newStyles = { ...styles };
+            
+            if (subTagName === 'strong' || subTagName === 'b' || 
+                (node as HTMLElement).style?.fontWeight === 'bold' || 
+                (node as HTMLElement).style?.fontWeight === '700' ||
+                (node as HTMLElement).style?.fontWeight === '800' ||
+                (node as HTMLElement).style?.fontWeight === '900') newStyles.bold = true;
+            
+            if (subTagName === 'em' || subTagName === 'i' || 
+                (node as HTMLElement).style?.fontStyle === 'italic') newStyles.italics = true;
+            
+            if (subTagName === 'u' || subTagName === 'ins' ||
+                (node as HTMLElement).style?.textDecoration === 'underline' || 
+                (node as HTMLElement).style?.textDecorationLine === 'underline' ||
+                (node as HTMLElement).style?.borderBottom?.includes('solid')) newStyles.underline = true;
+            
+            const nodeStyle = node.getAttribute('style') || '';
+            const nodeFontSizeMatch = nodeStyle.match(/font-size:\s*([\d.]+)pt/);
+            if (nodeFontSizeMatch) newStyles.fontSize = parseFloat(nodeFontSizeMatch[1]);
+            
+            const nodeFontFamilyMatch = nodeStyle.match(/font-family:\s*'([^']+)'/);
+            if (nodeFontFamilyMatch) newStyles.fontFamily = nodeFontFamilyMatch[1];
+
+            if ((subTagName === 'a' || subTagName === 'sup' || subTagName === 'span') && 
+                (node.getAttribute('id')?.includes('footnote') || 
+                 node.getAttribute('href')?.includes('footnote') || 
+                 (node as HTMLElement).className?.includes('footnote'))) {
+              const idMatch = (node.getAttribute('id') || node.getAttribute('href') || (node as HTMLElement).className || '').match(/footnote-(\d+)/);
+              const refId = idMatch ? idMatch[1] : null;
+              if (refId) {
+                if (exportSettings.footnotesAtEnd) {
+                  runs.push(new TextRun({
+                    text: `[${refId}]`,
+                    superScript: true,
+                    bold: true
+                  }));
+                } else {
+                  runs.push(new FootnoteReferenceRun(parseInt(refId)));
+                }
+              }
+              return;
+            }
+
+            node.childNodes.forEach(child => processNode(child, newStyles));
+          }
+        };
+
+        element.childNodes.forEach(node => processNode(node, {}));
+
+        if (runs.length > 0) {
+          if (isCitation) {
+            flushParagraph(); // Flush previous
+            children.push(new Paragraph({
+              children: runs,
+              alignment: AlignmentType.BOTH,
+              indent: { 
+                left: 720,
+                firstLine: 567 // 1 cm first-line indent
+              },
+              spacing: { before: 240, after: 240, line: 360 }
+            }));
+          } else {
+            // Add a space if we're merging and the previous run didn't end with one
+            if (currentParagraphRuns.length > 0) {
+              currentParagraphRuns.push(new TextRun(" "));
+            }
+            currentParagraphRuns.push(...runs);
+            
+            if (isTerminalPunctuation(originalText)) {
+              flushParagraph();
+            }
+          }
+        }
+      } else if (tagName === 'table') {
+        flushParagraph(); // Ensure previous paragraph is flushed before table
+        const rows: TableRow[] = [];
+        element.querySelectorAll('tr').forEach(tr => {
+          const cells: TableCell[] = [];
+          tr.querySelectorAll('td, th').forEach(td => {
+            cells.push(new TableCell({
+              children: [new Paragraph({
+                children: [new TextRun(anonymizeText(td.textContent || '', entities))],
+                alignment: AlignmentType.CENTER
+              })],
+              width: { size: 100 / tr.querySelectorAll('td, th').length, type: WidthType.PERCENTAGE }
+            }));
+          });
+          rows.push(new TableRow({ children: cells }));
+        });
+        children.push(new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+      } else if (tagName.startsWith('h') && tagName.length === 2) {
+        flushParagraph(); // Ensure previous paragraph is flushed before heading
+        const level = parseInt(tagName[1]);
+        children.push(new Paragraph({
+          text: anonymizeText(element.textContent || '', entities),
+          heading: level === 1 ? HeadingLevel.HEADING_1 : level === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3,
+          alignment: AlignmentType.BOTH,
+          indent: {
+            firstLine: 567, // 1 cm indent
+          },
+          spacing: { before: 240, after: 120 }
+        }));
+      }
+    };
+
+    Array.from(doc.body.children).forEach(child => {
+      processElement(child);
+    });
+    flushParagraph(); // Final flush
+
+    // Add footnotes at the end if requested
+    if (exportSettings.footnotesAtEnd && Object.keys(footnotes).length > 0) {
+      children.push(new Paragraph({ text: '', spacing: { before: 400 } }));
+      children.push(new Paragraph({ 
+        text: 'NOTAS DE RODAPÉ', 
+        heading: HeadingLevel.HEADING_2,
+        alignment: AlignmentType.CENTER
+      }));
+      
+      Object.entries(footnotes).forEach(([id, text]) => {
+        children.push(new Paragraph({
+          children: [
+            new TextRun({ text: `${id}. `, bold: true }),
+            new TextRun(anonymizeText(text, entities))
+          ],
+          alignment: AlignmentType.BOTH,
+          spacing: { before: 60, after: 60 }
+        }));
+      });
+    }
+
+    const docx = new DocxDocument({
+      styles: {
+        default: {
+          document: {
+            run: {
+              font: "Times New Roman",
+              size: 24, // 12pt
+            },
+            paragraph: {
+              alignment: AlignmentType.BOTH,
+              spacing: { line: 360, before: 120, after: 120 }
+            }
+          }
+        }
+      },
+      sections: [{
+        properties: {
+          page: {
+            margin: {
+              top: 1440, // 1 inch
+              right: 1440,
+              bottom: 1440,
+              left: 1440,
+            }
+          }
+        },
+        children: children,
+      }],
+    });
+
+    return await Packer.toBlob(docx);
   };
 
   const exportAnonymizedPDFBytes = async (fileData: FileData): Promise<Uint8Array> => {
@@ -2712,7 +3824,11 @@ export default function App() {
                          e.pseudonym.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesType = filterType === 'ALL' || e.type === filterType;
     const matchesIgnored = hideIgnored ? !e.ignored : true;
-    return matchesSearch && matchesType && matchesIgnored;
+    
+    // Filter by selected file if in review mode
+    const matchesFile = (reviewMode && selectedFileId) ? e.fileIds?.includes(selectedFileId) : true;
+    
+    return matchesSearch && matchesType && matchesIgnored && matchesFile;
   });
 
   const pseudonymAnalysis = useMemo(() => {
@@ -2967,7 +4083,7 @@ export default function App() {
                           onClick={() => {
                             if (!editingEntity) return;
                             setSplitResults([
-                              { original: editingEntity.original, type: editingEntity.type, id: Math.random().toString(36).substring(7) }
+                              { original: editingEntity.original, type: editingEntity.type, id: generateId() }
                             ]);
                           }}
                           className="px-3 py-1.5 bg-gray-50 text-gray-700 rounded-lg text-sm hover:bg-gray-100 transition-colors border border-gray-200"
@@ -3043,7 +4159,7 @@ export default function App() {
                           if (!editingEntity) return;
                           setSplitResults(prev => [
                             ...(prev || []),
-                            { original: "", type: editingEntity.type, id: Math.random().toString(36).substring(7) }
+                            { original: "", type: editingEntity.type, id: generateId() }
                           ]);
                         }}
                         className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-200 text-indigo-600 rounded-lg text-xs font-bold hover:bg-indigo-50 transition-colors shadow-sm uppercase tracking-wider"
@@ -3192,7 +4308,7 @@ export default function App() {
             </button>
 
             <button 
-              onClick={handleExport}
+              onClick={() => setShowExportModal(true)}
               disabled={files.length === 0 || isProcessing}
               title="Gera versões anonimizadas dos ficheiros carregados. PDFs são reconstruídos com pseudónimos."
               className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white px-4 py-2 rounded-lg font-medium transition-colors"
@@ -3238,12 +4354,54 @@ export default function App() {
               {reviewMode ? (
                 <div className="flex-1 flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden min-h-0">
                   <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50 shrink-0">
-                    <div className="flex items-center gap-2">
-                      <Eye className="w-4 h-4 text-indigo-600" />
-                      <h2 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Visualizador Original</h2>
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-2">
+                        <Eye className="w-4 h-4 text-indigo-600" />
+                        <h2 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Visualizador Original</h2>
+                      </div>
+                      <div className="flex items-center gap-2 border-l pl-4">
+                        <button
+                          onClick={() => setSelectionMode(selectionMode === 'header' ? 'none' : 'header')}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                            selectionMode === 'header' 
+                              ? 'bg-red-100 text-red-700 border border-red-200' 
+                              : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+                          }`}
+                        >
+                          <Crop className="w-3.5 h-3.5" />
+                          Marcar Cabeçalho
+                        </button>
+                        <button
+                          onClick={() => setSelectionMode(selectionMode === 'footer' ? 'none' : 'footer')}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                            selectionMode === 'footer' 
+                              ? 'bg-blue-100 text-blue-700 border border-blue-200' 
+                              : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+                          }`}
+                        >
+                          <Crop className="w-3.5 h-3.5" />
+                          Marcar Rodapé
+                        </button>
+                        {(headerZones.length > 0 || footerZones.length > 0) && (
+                          <button
+                            onClick={() => {
+                              setHeaderZones([]);
+                              setFooterZones([]);
+                              setSelectionMode('none');
+                            }}
+                            className="flex items-center gap-1 px-2 py-1.5 text-xs text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Limpar Zonas
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <button 
-                      onClick={() => setReviewMode(false)} 
+                      onClick={() => {
+                        setReviewMode(false);
+                        setSelectionMode('none');
+                      }} 
                       className="text-[10px] font-bold text-gray-400 hover:text-gray-600 uppercase tracking-widest flex items-center gap-1"
                     >
                       <X className="w-3 h-3" />
@@ -3258,6 +4416,19 @@ export default function App() {
                     setPendingManualTerm={setPendingManualTerm}
                     globalKnowledge={globalKnowledge}
                     safelist={safelist}
+                    selectionMode={selectionMode}
+                    onAreaSelected={(rect, pageNum, image) => {
+                      if (selectionMode === 'header') {
+                        setHeaderZones(prev => [...prev, { ...rect, image }]);
+                        extractTextFromZone(rect, 'HEADER', pageNum);
+                      }
+                      if (selectionMode === 'footer') {
+                        setFooterZones(prev => [...prev, { ...rect, image }]);
+                        extractTextFromZone(rect, 'HEADER', pageNum); // Both go to HEADER for removal logic
+                      }
+                    }}
+                    headerZones={headerZones}
+                    footerZones={footerZones}
                   />
                 </div>
               ) : (
@@ -3871,7 +5042,7 @@ export default function App() {
                               <Eye className="w-4 h-4" />
                             </button>
                             <button 
-                              onClick={() => setEntities(prev => prev.map(e => e.id === entity.id ? { ...e, treated: !e.treated, ignored: false } : e))}
+                              onClick={() => setEntities(prev => prev.map(e => e.id === entity.id ? { ...e, treated: !e.treated, ignored: false, enabled: true } : e))}
                               className={`p-2 rounded-lg transition-colors ${entity.treated ? 'text-green-600 bg-green-50' : 'text-gray-400 hover:bg-white hover:text-green-600'}`}
                               title="Validar"
                             >
@@ -3925,6 +5096,144 @@ export default function App() {
   </div>
 </main>
 
+      {/* Export Modal */}
+      <AnimatePresence>
+        {showExportModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowExportModal(false)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden relative z-10 border border-gray-100"
+            >
+              <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-100 flex items-center justify-center text-indigo-600">
+                    <Download className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-gray-900">Configurar Exportação</h3>
+                    <p className="text-xs text-gray-500">Escolha o formato e opções de saída</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowExportModal(false)} className="p-2 hover:bg-gray-200 rounded-full transition-colors">
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-6">
+                <div>
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3 block">Formato de Saída</label>
+                  <div className="grid grid-cols-3 gap-3">
+                    {[
+                      { id: 'pdf', label: 'PDF', icon: FileText, desc: 'Preserva layout' },
+                      { id: 'docx', label: 'Word', icon: FileText, desc: 'Editável' },
+                      { id: 'txt', label: 'Texto', icon: Type, desc: 'Simples' }
+                    ].map(format => (
+                      <button
+                        key={format.id}
+                        onClick={() => setExportSettings(prev => ({ ...prev, format: format.id as any }))}
+                        className={`flex flex-col items-center gap-2 p-3 rounded-xl border-2 transition-all ${
+                          exportSettings.format === format.id 
+                            ? 'border-indigo-500 bg-indigo-50/50 text-indigo-700' 
+                            : 'border-gray-100 hover:border-gray-200 text-gray-500'
+                        }`}
+                      >
+                        <format.icon className={`w-6 h-6 ${exportSettings.format === format.id ? 'text-indigo-600' : 'text-gray-400'}`} />
+                        <span className="text-xs font-bold">{format.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block">Opções Adicionais</label>
+                  
+                  <div className="space-y-3">
+                    <label className="flex items-center justify-between p-3 rounded-xl border border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600">
+                          <Layers className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-gray-700">Preservar Formatação</p>
+                          <p className="text-[10px] text-gray-500">Negritos, itálicos e tabelas</p>
+                        </div>
+                      </div>
+                      <input 
+                        type="checkbox" 
+                        checked={exportSettings.preserveFormatting}
+                        onChange={(e) => setExportSettings(prev => ({ ...prev, preserveFormatting: e.target.checked }))}
+                        className="w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between p-3 rounded-xl border border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-orange-50 flex items-center justify-center text-orange-600">
+                          <Scissors className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-gray-700">Remover Cabeçalhos/Rodapés</p>
+                          <p className="text-[10px] text-gray-500">Tenta limpar elementos repetitivos</p>
+                        </div>
+                      </div>
+                      <input 
+                        type="checkbox" 
+                        checked={exportSettings.removeHeadersFooters}
+                        onChange={(e) => setExportSettings(prev => ({ ...prev, removeHeadersFooters: e.target.checked }))}
+                        className="w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between p-3 rounded-xl border border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center text-purple-600">
+                          <List className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-gray-700">Notas de Rodapé no Fim</p>
+                          <p className="text-[10px] text-gray-500">Agrupa todas as notas no final</p>
+                        </div>
+                      </div>
+                      <input 
+                        type="checkbox" 
+                        checked={exportSettings.footnotesAtEnd}
+                        onChange={(e) => setExportSettings(prev => ({ ...prev, footnotesAtEnd: e.target.checked }))}
+                        className="w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
+                      />
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-6 bg-gray-50 border-t border-gray-100 flex gap-3">
+                <button 
+                  onClick={() => setShowExportModal(false)}
+                  className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 text-gray-600 font-bold text-xs hover:bg-white transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={handleExport}
+                  className="flex-[2] px-4 py-2.5 rounded-xl bg-indigo-600 text-white font-bold text-xs hover:bg-indigo-700 shadow-lg shadow-indigo-200 transition-all flex items-center justify-center gap-2"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Exportar Agora</span>
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {pendingManualTerm && (
         <div 
           className="fixed z-[100] bg-white shadow-2xl border border-gray-200 rounded-xl p-3 flex flex-col gap-2 animate-in fade-in zoom-in duration-200 min-w-[220px]"
@@ -3950,7 +5259,7 @@ export default function App() {
                     
                     // Also add to current entities as a treated entity
                     const newEntity: PIIEntity = {
-                      id: `manual-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+                      id: `manual-${Date.now()}-${generateId()}`,
                       original: pendingManualTerm.text,
                       type: type,
                       pseudonym: getNextPseudonym(type, entities),
@@ -3972,11 +5281,21 @@ export default function App() {
             })}
             <button 
               onClick={() => {
+                setGlobalKnowledge(prev => ({ ...prev, [pendingManualTerm.text.toLowerCase().trim()]: 'HEADER' }));
+                setPendingManualTerm(null);
+                showToast(`"${pendingManualTerm.text}" marcado como CABEÇALHO/RODAPÉ.`, "success");
+              }}
+              className="col-span-2 px-2 py-1.5 bg-indigo-50 text-indigo-700 text-[10px] font-bold rounded hover:bg-indigo-100 transition-all text-center border border-indigo-200 mt-1"
+            >
+              CABEÇALHO / RODAPÉ
+            </button>
+            <button 
+              onClick={() => {
                 setGlobalKnowledge(prev => ({ ...prev, [pendingManualTerm.text.toLowerCase().trim()]: 'EXCECAO' }));
                 setPendingManualTerm(null);
                 showToast(`"${pendingManualTerm.text}" adicionado às EXCEÇÕES.`, "success");
               }}
-              className="col-span-2 px-2 py-1.5 bg-gray-100 text-gray-600 text-[10px] font-bold rounded hover:bg-gray-200 transition-all text-center border border-gray-200 mt-1"
+              className="col-span-2 px-2 py-1.5 bg-gray-100 text-gray-600 text-[10px] font-bold rounded hover:bg-gray-200 transition-all text-center border border-gray-200"
             >
               EXCEÇÃO
             </button>
@@ -4095,25 +5414,49 @@ export default function App() {
             >
               <div className="p-6 border-b border-gray-100 flex items-center justify-between">
                 <h3 className="text-xl font-bold">Unir a Grupo Existente</h3>
-                <button onClick={() => setShowMergeModal(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                <button onClick={() => {
+                  setShowMergeModal(false);
+                  setMergeSearch('');
+                  setShowAllMergeOptions(false);
+                }} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
                   <X className="w-5 h-5" />
                 </button>
               </div>
               
-              <div className="p-4 max-h-[60vh] overflow-y-auto space-y-2">
-                {entities
-                  .filter(e => !selectedIds.has(e.id))
-                  .reduce((acc, e) => {
-                    const key = e.groupId || e.id;
-                    if (!acc.find(item => (item.groupId || item.id) === key)) {
-                      acc.push(e);
-                    }
-                    return acc;
-                  }, [] as PIIEntity[])
-                  .map(groupHead => (
+              <div className="p-4 border-b border-gray-50 bg-gray-50/50">
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input 
+                    type="text"
+                    placeholder="Procurar grupo..."
+                    value={mergeSearch}
+                    onChange={(e) => setMergeSearch(e.target.value)}
+                    className="w-full pl-9 pr-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                  />
+                </div>
+                {!showAllMergeOptions && !mergeSearch && (
+                  <div className="mt-2 flex items-center justify-between">
+                    <p className="text-[10px] text-gray-500 font-medium uppercase tracking-wider">Sugestões baseadas em "{editingEntity?.original}"</p>
+                    <button 
+                      onClick={() => setShowAllMergeOptions(true)}
+                      className="text-[10px] text-indigo-600 font-bold hover:underline"
+                    >
+                      Mostrar Todos
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-4 max-h-[50vh] overflow-y-auto space-y-2">
+                {mergeOptions.length > 0 ? (
+                  mergeOptions.map(groupHead => (
                     <button
                       key={groupHead.id}
-                      onClick={() => handleMergeToGroup(groupHead.groupId || groupHead.id)}
+                      onClick={() => {
+                        handleMergeToGroup(groupHead.groupId || groupHead.id);
+                        setMergeSearch('');
+                        setShowAllMergeOptions(false);
+                      }}
                       className="w-full p-4 flex items-center justify-between hover:bg-indigo-50 rounded-2xl border border-gray-100 transition-all hover:border-indigo-200 text-left group"
                     >
                       <div className="flex items-center gap-3">
@@ -4127,7 +5470,20 @@ export default function App() {
                       </div>
                       <ChevronRight className="w-5 h-5 text-gray-300 group-hover:text-indigo-400" />
                     </button>
-                  ))}
+                  ))
+                ) : (
+                  <div className="py-8 text-center">
+                    <p className="text-sm text-gray-400">Nenhum grupo encontrado.</p>
+                    {!showAllMergeOptions && (
+                      <button 
+                        onClick={() => setShowAllMergeOptions(true)}
+                        className="mt-2 text-xs text-indigo-600 font-bold hover:underline"
+                      >
+                        Ver todas as opções
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </motion.div>
           </div>
@@ -5026,6 +6382,12 @@ export default function App() {
                   Coletivas
                 </button>
                 <button 
+                  onClick={() => setExceptionsTab('HEADER')}
+                  className={`flex-1 py-3 text-sm font-bold transition-colors ${exceptionsTab === 'HEADER' ? 'text-indigo-600 border-b-2 border-indigo-600 bg-indigo-50/30' : 'text-gray-500 hover:bg-gray-50'}`}
+                >
+                  Cabeçalhos
+                </button>
+                <button 
                   onClick={() => setExceptionsTab('SAFELIST')}
                   className={`flex-1 py-3 text-sm font-bold transition-colors ${exceptionsTab === 'SAFELIST' ? 'text-indigo-600 border-b-2 border-indigo-600 bg-indigo-50/30' : 'text-gray-500 hover:bg-gray-50'}`}
                 >
@@ -5047,7 +6409,7 @@ export default function App() {
                 <div className="flex gap-2">
                   <input 
                     type="text" 
-                    placeholder={`Adicionar novo(a) ${exceptionsTab === 'EXCECAO' ? 'exceção' : exceptionsTab === 'JUIZ' ? 'juiz' : exceptionsTab === 'AUTOR' ? 'autor' : 'termo na safelist'}...`}
+                    placeholder={`Adicionar novo(a) ${exceptionsTab === 'EXCECAO' ? 'exceção' : exceptionsTab === 'JUIZ' ? 'juiz' : exceptionsTab === 'AUTOR' ? 'autor' : exceptionsTab === 'HEADER' ? 'cabeçalho' : 'termo na safelist'}...`}
                     className="flex-1 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
@@ -5189,7 +6551,7 @@ export default function App() {
                       className="text-xs font-bold text-red-500 hover:text-red-700 flex items-center gap-1 transition-colors"
                     >
                       <Trash2 className="w-3 h-3" />
-                      Limpar {exceptionsTab === 'EXCECAO' ? 'Exceções' : exceptionsTab === 'JUIZ' ? 'Juízes' : exceptionsTab === 'AUTOR' ? 'Autores' : exceptionsTab === 'COLETIVA' ? 'Coletivas' : 'Safelist'}
+                      Limpar {exceptionsTab === 'EXCECAO' ? 'Exceções' : exceptionsTab === 'JUIZ' ? 'Juízes' : exceptionsTab === 'AUTOR' ? 'Autores' : exceptionsTab === 'COLETIVA' ? 'Coletivas' : exceptionsTab === 'HEADER' ? 'Cabeçalhos' : 'Safelist'}
                     </button>
                     <button 
                       onClick={handleClearAllGlobalKnowledge}
@@ -5299,16 +6661,17 @@ export default function App() {
                                 >
                                   <Pencil className="w-4 h-4" />
                                 </button>
-                                <select 
-                                  value={type as string}
-                                  onChange={(e) => setGlobalKnowledge(prev => ({ ...prev, [text]: e.target.value }))}
-                                  className="text-xs bg-white border border-gray-200 rounded px-2 py-1 outline-none focus:border-indigo-300"
-                                >
-                                  <option value="EXCECAO">Exceção</option>
-                                  <option value="JUIZ">Juiz</option>
-                                  <option value="AUTOR">Autor</option>
-                                  <option value="COLETIVA">Coletiva</option>
-                                </select>
+                                  <select 
+                                    value={type as string}
+                                    onChange={(e) => setGlobalKnowledge(prev => ({ ...prev, [text]: e.target.value }))}
+                                    className="text-xs bg-white border border-gray-200 rounded px-2 py-1 outline-none focus:border-indigo-300"
+                                  >
+                                    <option value="EXCECAO">Exceção</option>
+                                    <option value="JUIZ">Juiz</option>
+                                    <option value="AUTOR">Autor</option>
+                                    <option value="COLETIVA">Coletiva</option>
+                                    <option value="HEADER">Cabeçalho</option>
+                                  </select>
                                 <button 
                                   onClick={() => setGlobalKnowledge(prev => {
                                     const next = { ...prev };
@@ -5323,6 +6686,34 @@ export default function App() {
                               </div>
                             </div>
                           ))}
+                      </div>
+                    )}
+                    {exceptionsTab === 'HEADER' && (headerZones.length > 0 || footerZones.length > 0) && (
+                      <div className="mt-8 pt-8 border-t border-gray-100">
+                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-4">Zonas Visuais Selecionadas</h4>
+                        <div className="grid grid-cols-2 gap-4">
+                          {[...headerZones.map((z, i) => ({ ...z, type: 'Cabeçalho', originalIndex: i })), ...footerZones.map((z, i) => ({ ...z, type: 'Rodapé', originalIndex: i }))].map((zone, idx) => (
+                            <div key={idx} className="bg-white border border-gray-200 rounded-xl overflow-hidden group">
+                              <div className="p-2 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+                                <span className="text-[10px] font-bold text-gray-500 uppercase">{zone.type}</span>
+                                <button 
+                                  onClick={() => {
+                                    if (zone.type === 'Cabeçalho') setHeaderZones(prev => prev.filter((_, i) => i !== zone.originalIndex));
+                                    else setFooterZones(prev => prev.filter((_, i) => i !== zone.originalIndex));
+                                  }}
+                                  className="p-1 text-gray-400 hover:text-red-500 transition-colors"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                              {zone.image ? (
+                                <img src={zone.image} alt="Zone" className="w-full h-24 object-contain bg-gray-100" referrerPolicy="no-referrer" />
+                              ) : (
+                                <div className="w-full h-24 bg-gray-100 flex items-center justify-center text-[10px] text-gray-400 italic">Sem imagem</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </>

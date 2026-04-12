@@ -1,3 +1,29 @@
+export function deduplicateEntities(entities: PIIEntity[]): PIIEntity[] {
+  const uniqueEntities: PIIEntity[] = [];
+  const seenIds = new Set<string>();
+  
+  entities.forEach(entity => {
+    if (!seenIds.has(entity.id)) {
+      uniqueEntities.push(entity);
+      seenIds.add(entity.id);
+    } else {
+      // If duplicate ID found, give it a new one to prevent React key errors
+      const newEntity = { ...entity, id: generateId() };
+      uniqueEntities.push(newEntity);
+      seenIds.add(newEntity.id);
+    }
+  });
+  
+  return uniqueEntities;
+}
+
+export function generateId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+}
+
 export type PIIType = string; // More flexible type system
 
 export interface PIIEntity {
@@ -17,6 +43,9 @@ export interface PIIEntity {
   contextSnippet?: string; // 2 words before + entity + 2 words after
   reviewed?: boolean; // For ambiguity review
   score?: number; // Confidence score
+  page?: number; // Page number where it was found
+  y?: number; // Vertical position (0 to 1, or absolute)
+  x?: number; // Horizontal position
 }
 
 export const PII_COLORS: Record<string, { bg: [number, number, number], text: [number, number, number], hex: string, textHex: string }> = {
@@ -33,6 +62,7 @@ export const PII_COLORS: Record<string, { bg: [number, number, number], text: [n
   MATRICULA: { bg: [0.8, 0.8, 0], text: [0, 0, 0], hex: '#CCCC00', textHex: '#000000' }, // Amarelo Escuro
   ADVOGADO: { bg: [0.5, 0.5, 0.5], text: [1, 1, 1], hex: '#808080', textHex: '#FFFFFF' }, // Cinza
   COLETIVA: { bg: [0.5, 0.2, 0.1], text: [1, 1, 1], hex: '#8B4513', textHex: '#FFFFFF' }, // Marrom (SaddleBrown)
+  HEADER: { bg: [0.9, 0.9, 0.9], text: [0.4, 0.4, 0.4], hex: '#E5E7EB', textHex: '#4B5563' }, // Cinza Claro
 };
 
 // Dicionário de nomes comuns em Portugal para aumentar a precisão
@@ -314,18 +344,18 @@ const PII_PATTERNS = {
   EMAIL: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
   IBAN: /\bPT50\s?\d{21}\b/gi,
   MATRICULA: /\b(?:[A-Z]{2}-\d{2}-\d{2}|\d{2}-\d{2}-[A-Z]{2}|\d{2}-[A-Z]{2}-\d{2}|[A-Z]{2}-\d{2}-[A-Z]{2})\b/g,
-  JUIZ: /\bJuiz(?:\(a\))?\s+(?:de\s+Direito\s+)?([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
-  AUTOR: /\bAutor(?:\(a\))?\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
-  ADVOGADO: /\b(?:Advogado|Advogada|Mandatário|Mandatária)\s+([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
+  JUIZ: /\bJuiz(?:\(a\))?\s+(?:de\s+Direito\s+)?([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*)/g,
+  AUTOR: /\bAutor(?:\(a\))?\s+([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*)/g,
+  ADVOGADO: /\b(?:Advogado|Advogada|Mandatário|Mandatária)\s+([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*)/g,
   // More aggressive name patterns for Portuguese - updated to handle internal spaces like "F erreira"
-  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Autora|Réu|Ré|Arguido|Arguida|Denunciado|Denunciada|Participante|Mandatário|Advogado|Advogada|Recorrente|Recorrido)(?:,\s*|\s+)([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)/g,
-  NOME_CAPS: /\b([A-ZÀ-Ÿ]{2,}(?:\s+(?:de|da|do|dos|das|e|DE|DA|DO|DOS|DAS|E)\s+[A-ZÀ-Ÿ]{2,}|\s+[A-ZÀ-Ÿ]{2,}){1,8})\b/g,
+  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Autora|Réu|Ré|Arguido|Arguida|Denunciado|Denunciada|Participante|Mandatário|Advogado|Advogada|Recorrente|Recorrida|Recorrido)(?:,\s*|\s+)([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*)/g,
+  NOME_CAPS: /\b([A-ZÀ-ÖØ-Þ]{2,}(?:\s+(?:de|da|do|dos|das|e|DE|DA|DO|DOS|DAS|E)\s+[A-ZÀ-ÖØ-Þ]{2,}|\s+[A-ZÀ-ÖØ-Þ]{2,}){1,8})\b/g,
   // Generic sequence of capitalized words (2 or more) - updated to handle internal spaces
-  NOME_GENERIC: /\b([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){0,8})\b/g,
+  NOME_GENERIC: /\b([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)){0,8})\b/g,
   // Pattern for names with "e" in the middle (often two people)
-  NOME_AND: /\b([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*\s+e\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.))*)\b/g,
+  NOME_AND: /\b([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*\s+e\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*)\b/g,
   // Legal context patterns
-  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à|recorrente|recorrido)(?:,\s*|\s+)([A-Z](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-Z](?:\s*[a-zÀ-ÿ]+|\.)){0,8})/g,
+  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à|recorrente|recorrida|recorrido)(?:,\s*|\s+)([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)){0,8})/g,
   COLETIVA: /\b(?:Associação|Fundação|Cooperativa|Sociedade|Empresa|Escola|Faculdade|Universidade|Instituto|Centro|Agrupamento|Sindicato|Banco|Seguradora|Companhia|Câmara|Junta|Assembleia|Governo|Estado|República|Ministério|Tribunal|Conselho|Direção|Serviço|Autoridade|Comissão|Unidade|Núcleo|Agência)\s+([A-ZÀ-ÿ][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+|\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+){1,8})\b|\b([A-ZÀ-ÿ][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+|\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+){0,8})\s+(?:Lda\.?|Limitada|S\.A\.?|Sociedade\s+Anónima|Unipessoal|S\.?C\.?P\.?|S\.?P\.?Q\.?)\b/g,
 };
 
@@ -441,6 +471,7 @@ export function getNextPseudonym(type: string, existingEntities: PIIEntity[]): s
     JUIZ: 'JUIZ',
     ADVOGADO: 'ADVOGADO',
     COLETIVA: 'COLETIVA',
+    HEADER: 'CABECALHO',
   };
 
   const prefix = prefixes[type] || type;
@@ -641,10 +672,18 @@ export function scanText(
   existingEntities: PIIEntity[] = [], 
   isRelated: boolean = true, 
   globalKnowledge: Record<string, string> = {},
-  safelist: Safelist = { words_ignore: [], phrases_ignore: [] }
+  safelist: Safelist = { words_ignore: [], phrases_ignore: [] },
+  positions: { start: number, end: number, page: number, y: number }[] = []
 ): PIIEntity[] {
   const entities: PIIEntity[] = [];
-  const foundMatches: { text: string, type: string, start: number, end: number, reason?: string }[] = [];
+  const foundMatches: { text: string, type: string, start: number, end: number, reason?: string, page?: number, y?: number }[] = [];
+
+  // Helper to get position for a text range
+  const getPosition = (start: number, end: number) => {
+    // Find the paragraph that contains the start of the match
+    const pos = positions.find(p => start >= p.start && start <= p.end);
+    return pos || null;
+  };
 
   // Pré-processamento: Identificar áreas protegidas pela Safelist
   const protectedRanges: { start: number, end: number, term: string }[] = [];
@@ -747,12 +786,23 @@ export function scanText(
       const regex = getRegexForTerm(name);
       let match;
       while ((match = regex.exec(text)) !== null) {
+        const start = match.index;
+        const end = match.index + match[0].length;
+        const pos = getPosition(start, end);
+
+        // CRITICAL: HEADER type is only valid at the top of the page (top 20%)
+        if (type === 'HEADER' && pos && pos.y > 0.20) {
+          continue;
+        }
+
         foundMatches.push({
           text: match[0],
           type: type,
-          start: match.index,
-          end: match.index + match[0].length,
-          reason: 'global-knowledge'
+          start: start,
+          end: end,
+          reason: 'global-knowledge',
+          page: pos?.page,
+          y: pos?.y
         });
       }
     }
@@ -772,6 +822,12 @@ export function scanText(
 
         const start = match.index + (match[0].indexOf(matchText));
         const end = start + matchText.length;
+        const pos = getPosition(start, end);
+
+        // CRITICAL: HEADER type is only valid at the top of the page
+        if (type === 'HEADER' && pos && pos.y > 0.20) {
+          continue;
+        }
 
         // Verificar se está em área protegida (PASSO A) - Melhorado para detetar sobreposições
         if (protectedRanges.some(r => start < r.end && end > r.start)) continue;
@@ -783,15 +839,17 @@ export function scanText(
           text: matchText,
           type: type.startsWith('NOME') ? 'NOME' : type,
           start: start,
-          end: end
+          end: end,
+          page: pos?.page,
+          y: pos?.y
         });
       }
     });
 
   // 2. Portuguese Legal Patterns (Parties) - Updated to require capitalization for names and handle internal spaces
   const legalPatterns = [
-    /(?:Recorrente|Recorrido|Requerente|Requerido|Réu|Ré|Arguido|Arguida|Denunciado|Denunciada|Participante|Assistente|Beneficiário|Executado|Exequente|Oponente|Reclamante|Reclamado|Interveniente|Contrainteressado|Apelante|Apelado|Agravante|Agravado|Embargante|Embargado|Demandante|Demandado|Advogado|Advogada|Mandatário|Mandatária|Autor|Autora)(?::|,\s*|\s+)\s*([A-ZÀ-Ÿ](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-Ÿ](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-ZÀ-Ÿ](?:\s*[a-zÀ-ÿ]+|\.)){0,8})/g,
-    /(?:Nome|Apelido|Filiação|Naturalidade|Residência|Sede)(?::|,\s*|\s+)\s*([A-ZÀ-Ÿ](?:\s*[a-zÀ-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-Ÿ](?:\s*[a-zÀ-ÿ]+|\.)|\s+[A-ZÀ-Ÿ](?:\s*[a-zÀ-ÿ]+|\.)){0,8})/g,
+    /(?:Recorrente|Recorrida|Recorrido|Requerente|Requerido|Réu|Ré|Arguido|Arguida|Denunciado|Denunciada|Participante|Assistente|Beneficiário|Executado|Exequente|Oponente|Reclamante|Reclamado|Interveniente|Contrainteressado|Apelante|Apelado|Agravante|Agravado|Embargante|Embargado|Demandante|Demandado|Advogado|Advogada|Mandatário|Mandatária|Autor|Autora)(?::|,\s*|\s+)\s*([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)){0,8})/g,
+    /(?:Nome|Apelido|Filiação|Naturalidade|Residência|Sede)(?::|,\s*|\s+)\s*([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)){0,8})/g,
   ];
 
   legalPatterns.forEach(pattern => {
@@ -801,6 +859,7 @@ export function scanText(
         const matchText = match[1].trim();
         const index = match.index + match[0].indexOf(matchText);
         const end = index + matchText.length;
+        const pos = getPosition(index, end);
 
         // Verificar Safelist - Melhorado para detetar sobreposições
         if (protectedRanges.some(r => index < r.end && end > r.start)) continue;
@@ -834,7 +893,9 @@ export function scanText(
           text: matchText,
           type: type,
           start: index,
-          end: end
+          end: end,
+          page: pos?.page,
+          y: pos?.y
         });
       }
     }
@@ -877,7 +938,7 @@ export function scanText(
     occurrenceCounts.set(norm, (occurrenceCounts.get(norm) || 0) + 1);
   });
 
-  const addEntity = (original: string, type: string, start: number, end: number) => {
+  const addEntity = (original: string, type: string, start: number, end: number, page?: number, y?: number) => {
     let trimmed = original.trim();
     
     // Clean names specifically
@@ -990,13 +1051,14 @@ export function scanText(
       });
 
       // Atribuir o tipo com melhor correspondência (mínimo de 2 palavras e score > 0.7)
-      if (bestJudgeScore > 0.7 || bestAuthorScore > 0.7) {
+      // O utilizador pediu rigor: se tem duas palavras iguais, deve sugerir (score boost)
+      if (bestJudgeScore > 0.4 || bestAuthorScore > 0.4) {
         if (bestJudgeScore >= bestAuthorScore) {
           identifiedType = 'JUIZ';
         } else {
           identifiedType = 'AUTOR';
         }
-        score += 5; // Boost score if matched with global knowledge
+        score += 10; // Boost score significantly if matched with global knowledge
       }
     }
 
@@ -1012,17 +1074,16 @@ export function scanText(
         pseudonym: existing.type !== identifiedType ? getNextPseudonym(identifiedType, [...existingEntities, ...entities]) : existing.pseudonym,
         fileIds: updatedFileIds,
         score: score,
+        page: page || existing.page,
+        y: y || existing.y
       });
       return;
     }
 
-    const id = Math.random().toString(36).substring(7);
+    const id = generateId();
     const pseudonym = getNextPseudonym(identifiedType, [...existingEntities, ...entities]);
     
     // DECISION: Enable automatically only if score is high enough
-    // score >= 4: Auto-enable
-    // 2 <= score < 4: Manual review (enabled: false)
-    // score < 2: Likely false positive, but we keep it disabled for safety
     const isAutoEnabled = score >= 4;
 
     entities.push({
@@ -1036,12 +1097,14 @@ export function scanText(
       contextBefore: wordsBefore,
       contextAfter: wordsAfter,
       contextSnippet,
-      score: score
+      score: score,
+      page,
+      y
     });
   };
 
   mergedMatches.forEach(m => {
-    addEntity(m.text, m.type, m.start, m.end);
+    addEntity(m.text, m.type, m.start, m.end, m.page, m.y);
   });
 
   return entities;
@@ -1055,7 +1118,7 @@ export function splitEntity(entity: PIIEntity, entities: PIIEntity[]): PIIEntity
     const pseudonym = getNextPseudonym(entity.type, entities);
     return {
       ...entity,
-      id: Math.random().toString(36).substring(7),
+      id: generateId(),
       original: word,
       pseudonym,
       groupId: undefined
@@ -1262,16 +1325,26 @@ export function anonymizeText(text: string, entities: PIIEntity[]): string {
   let result = text;
   
   // Sort entities by length descending to avoid partial replacements
+  // Include treated entities even if not "enabled" by the auto-scanner
   const sortedEntities = [...entities]
-    .filter(e => e.enabled && !e.ignored && e.type !== 'AUTOR' && e.type !== 'JUIZ')
+    .filter(e => (e.enabled || e.treated) && !e.ignored && e.type !== 'AUTOR' && e.type !== 'JUIZ')
     .sort((a, b) => b.original.length - a.original.length);
 
+  // Use a map to avoid duplicate replacements of the same original text
+  const handled = new Set<string>();
+
   sortedEntities.forEach(entity => {
+    const original = entity.original.trim();
+    if (!original || handled.has(original)) return;
+    handled.add(original);
+
     // Escape special characters and allow flexible spacing (handles justified text and extra spaces)
-    const escaped = entity.original
+    const escaped = original
       .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       .replace(/\s+/g, '\\s+');
-    // Use word boundaries to avoid partial matches, but handle names that might start/end with non-word chars
+    
+    // Use word boundaries to avoid partial matches
+    // We use a more flexible boundary check for names that might contain non-word chars
     const regex = new RegExp(`\\b${escaped}\\b`, 'g');
     result = result.replace(regex, entity.pseudonym);
   });
