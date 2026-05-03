@@ -372,7 +372,8 @@ const DocumentViewer = memo(({
   selectionMode,
   onAreaSelected,
   headerZones,
-  footerZones
+  footerZones,
+  onFileUpload
 }: { 
   file: FileData | null, 
   entities: PIIEntity[],
@@ -384,7 +385,8 @@ const DocumentViewer = memo(({
   selectionMode: 'none' | 'header' | 'footer',
   onAreaSelected: (rect: { top: number; bottom: number; left: number; right: number }, pageNum: number, image?: string) => void,
   headerZones: { top: number; bottom: number; left: number; right: number; image?: string }[],
-  footerZones: { top: number; bottom: number; left: number; right: number; image?: string }[]
+  footerZones: { top: number; bottom: number; left: number; right: number; image?: string }[],
+  onFileUpload: (event: React.ChangeEvent<HTMLInputElement>) => void
 }) => {
   const [pages, setPages] = useState<number[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -531,30 +533,49 @@ const DocumentViewer = memo(({
         }}
       >
         {isPDF && viewMode === 'pdf' ? (
-          pages.map(pageNum => (
-            <div 
-              key={pageNum} 
-              data-page-number={pageNum}
-              className="bg-white shadow-lg mx-auto relative group rounded-sm overflow-hidden"
-              style={{ width: 'fit-content' }}
-            >
-              <PDFPage 
-                file={file.rawFile} 
-                pageNum={pageNum} 
-                allEntities={entities}
-                selectedEntityId={selectedEntityId}
-                selectedIds={selectedIds}
-                onVisible={() => setCurrentPage(pageNum)}
-                selectionMode={selectionMode}
-                onAreaSelected={onAreaSelected}
-                headerZones={headerZones}
-                footerZones={footerZones}
-              />
-              <div className="absolute top-2 left-2 bg-black/60 text-white text-[9px] font-bold px-2 py-1 rounded backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity">
-                PÁG. {pageNum}
+          pages.length > 0 ? (
+            pages.map(pageNum => (
+              <div 
+                key={pageNum} 
+                data-page-number={pageNum}
+                className="bg-white shadow-lg mx-auto relative group rounded-sm overflow-hidden"
+                style={{ width: 'fit-content' }}
+              >
+                <PDFPage 
+                  file={file.rawFile} 
+                  pageNum={pageNum} 
+                  allEntities={entities}
+                  selectedEntityId={selectedEntityId}
+                  selectedIds={selectedIds}
+                  onVisible={() => setCurrentPage(pageNum)}
+                  selectionMode={selectionMode}
+                  onAreaSelected={onAreaSelected}
+                  headerZones={headerZones}
+                  footerZones={footerZones}
+                />
+                <div className="absolute top-2 left-2 bg-black/60 text-white text-[9px] font-bold px-2 py-1 rounded backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity">
+                  PÁG. {pageNum}
+                </div>
               </div>
+            ))
+          ) : (
+            <div className="flex flex-col items-center justify-center py-20 text-center bg-white rounded-xl border border-dashed border-gray-300 max-w-lg mx-auto mt-8">
+              <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center text-amber-600 mb-4">
+                <AlertCircle className="w-8 h-8" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 leading-tight">Layout original indisponível</h3>
+              <p className="text-sm text-gray-500 mt-2 px-8">
+                Para visualizar o layout original deste PDF e exportar com alta fidelidade após uma restauração de sessão, é necessário recarregar o ficheiro original.
+              </p>
+              <label className="mt-6 px-6 py-2 bg-indigo-600 text-white rounded-lg font-medium cursor-pointer hover:bg-indigo-700 transition-colors inline-block">
+                Recarregar Ficheiro
+                <input type="file" className="hidden" accept=".pdf" onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onFileUpload(e);
+                }} />
+              </label>
             </div>
-          ))
+          )
         ) : (
           <div className="bg-white p-10 shadow-sm mx-auto max-w-4xl min-h-full rounded-xl border border-gray-200 relative">
              <div className="prose prose-sm max-w-none font-mono text-sm whitespace-pre-wrap text-gray-700">
@@ -651,11 +672,12 @@ const HighlightText = memo(({ text, entities, mode, globalKnowledge, safelist }:
     
     // Use word boundaries for short patterns to avoid matching inside other words (e.g. "os" in "instrumentos")
     // For longer patterns, word boundaries are also generally safer.
+    const wordChars = 'a-zA-ZÀ-ÿ0-9_';
     const patternStrings = uniquePatterns.map(p => {
       const escaped = escapeRegExp(p);
-      // If it's a simple word-like pattern, wrap in word boundaries
+      // If it's a simple word-like pattern, wrap in word boundaries that respect Unicode
       if (/^[a-z0-9À-ÿ]+$/i.test(p)) {
-        return `\\b${escaped}\\b`;
+        return `(?<![${wordChars}])${escaped}(?![${wordChars}])`;
       }
       return escaped;
     });
@@ -3060,15 +3082,33 @@ export default function App() {
         const baseName = fileData.name.replace(/\.[^/.]+$/, "");
         
         if (exportSettings.format === 'pdf') {
-          if (exportSettings.preserveFormatting && (fileData.type === 'application/pdf' || fileData.htmlContent)) {
-            const pdfBlob = await createPdfFromHtml(fileData.htmlContent || '', fileData.name, fileData.id);
+          if (fileData.type === 'application/pdf') {
+            try {
+              // Try the highly robust method for original PDFs first
+              const pdfBytes = await exportAnonymizedPDFBytes(fileData);
+              processedFiles.push({ name: `${baseName}_anon.pdf`, data: pdfBytes, isPdf: true, format: 'pdf' });
+              zip.file(`${baseName}_anon.pdf`, pdfBytes);
+            } catch (err) {
+              console.warn(`Original PDF ${fileData.name} not available or failed layout export, using fallback:`, err);
+              // Fallback 1: Reconstructed layout from HTML if available
+              if (fileData.htmlContent) {
+                const pdfBlob = await createPdfFromHtml(fileData.htmlContent, fileData.name, fileData.id);
+                processedFiles.push({ name: `${baseName}_anon.pdf`, data: pdfBlob, isPdf: true, format: 'pdf' });
+                zip.file(`${baseName}_anon.pdf`, pdfBlob);
+              } else {
+                // Fallback 2: Simple text-to-pdf
+                const pdfBlob = await generateAnonymizedPdfFromText(fileData);
+                processedFiles.push({ name: `${baseName}_anon.pdf`, data: pdfBlob, isPdf: true, format: 'pdf' });
+                zip.file(`${baseName}_anon.pdf`, pdfBlob);
+              }
+            }
+          } else if (exportSettings.preserveFormatting && fileData.htmlContent) {
+            // Reconstructed layout for other formats (HTML, DOCX)
+            const pdfBlob = await createPdfFromHtml(fileData.htmlContent, fileData.name, fileData.id);
             processedFiles.push({ name: `${baseName}_anon.pdf`, data: pdfBlob, isPdf: true, format: 'pdf' });
             zip.file(`${baseName}_anon.pdf`, pdfBlob);
-          } else if (fileData.type === 'application/pdf') {
-            const pdfBytes = await exportAnonymizedPDFBytes(fileData);
-            processedFiles.push({ name: `${baseName}_anon.pdf`, data: pdfBytes, isPdf: true, format: 'pdf' });
-            zip.file(`${baseName}_anon.pdf`, pdfBytes);
           } else {
+            // Simple text fallback
             const pdfBlob = await generateAnonymizedPdfFromText(fileData);
             processedFiles.push({ name: `${baseName}_anon.pdf`, data: pdfBlob, isPdf: true, format: 'pdf' });
             zip.file(`${baseName}_anon.pdf`, pdfBlob);
@@ -3112,8 +3152,24 @@ export default function App() {
     const doc = new jsPDF();
     const anonymizedText = anonymizeText(fileData.content, entities);
     
-    const splitText = doc.splitTextToSize(anonymizedText, 180);
-    doc.text(splitText, 15, 20);
+    const margin = 15;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const usableWidth = pageWidth - (margin * 2);
+    
+    const lines = doc.splitTextToSize(anonymizedText, usableWidth);
+    
+    let cursorY = 20;
+    const lineHeight = 7;
+    
+    lines.forEach((line: string) => {
+      if (cursorY + lineHeight > pageHeight - margin) {
+        doc.addPage();
+        cursorY = 20;
+      }
+      doc.text(line, margin, cursorY);
+      cursorY += lineHeight;
+    });
     
     return doc.output('blob');
   };
@@ -3343,7 +3399,10 @@ export default function App() {
       node.textContent = anonymizeText(node.textContent || '', entities);
     }
     
-    container.appendChild(bodyClone);
+    // Append children to avoid nested bodies
+    while (bodyClone.firstChild) {
+      container.appendChild(bodyClone.firstChild);
+    }
 
     // Add footnotes at the end
     if (exportSettings.footnotesAtEnd && Object.keys(footnotes).length > 0) {
@@ -3366,37 +3425,56 @@ export default function App() {
       });
     }
 
-    // Append to body temporarily (required for some jsPDF rendering)
-    container.style.position = 'absolute';
-    container.style.left = '-9999px';
+    // Append to body temporarily but keep it invisible to the user
+    container.style.position = 'fixed';
+    container.style.left = '-10000mm';
     container.style.top = '0';
+    container.style.zIndex = '-9999';
+    container.style.background = 'white';
     document.body.appendChild(container);
 
     const pdf = new jsPDF('p', 'mm', 'a4');
     
     try {
-      await pdf.html(container, {
-        callback: function (doc) {
-          // No-op, handled by promise
-        },
-        x: 0,
-        y: 0,
-        width: 210, // A4 width
-        windowWidth: 800,
-        autoPaging: 'text',
-        html2canvas: {
-          scale: 2,
-          useCORS: true,
-          logging: false
-        }
+      // Small delay for layout to stabilize
+      await new Promise(r => setTimeout(r, 100));
+
+      await new Promise<void>((resolve, reject) => {
+        pdf.html(container, {
+          callback: function (doc) {
+            resolve();
+          },
+          x: 0,
+          y: 0,
+          width: 210, // A4 width
+          windowWidth: 800,
+          autoPaging: 'text',
+          margin: [10, 10, 10, 10],
+          html2canvas: {
+            scale: 1, 
+            useCORS: true,
+            logging: false,
+            allowTaint: true,
+            backgroundColor: '#ffffff'
+          }
+        }).catch(err => {
+          console.error("jsPDF.html rendering error:", err);
+          reject(err);
+        });
       });
       
-      document.body.removeChild(container);
+      if (container.parentNode) document.body.removeChild(container);
       return pdf.output('blob');
     } catch (err) {
       console.error("Error generating PDF from HTML:", err);
       if (container.parentNode) document.body.removeChild(container);
-      return new Blob([pdf.output()], { type: 'application/pdf' });
+      
+      // Fallback: try simple text-based output if HTML rendering failed
+      const textForFallback = anonymizeText(html.replace(/<[^>]*>?/gm, ' '), entities);
+      const fallbackPdf = new jsPDF();
+      const splitText = fallbackPdf.splitTextToSize(textForFallback, 180);
+      fallbackPdf.text(splitText, 15, 20);
+      return fallbackPdf.output('blob');
     }
   };
 
@@ -3706,9 +3784,20 @@ export default function App() {
     return await Packer.toBlob(docx);
   };
 
+  const dataURLToUint8Array = (dataURL: string) => {
+    const base64 = dataURL.split(',')[1];
+    const binaryString = window.atob(base64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
+  };
+
   const exportAnonymizedPDFBytes = async (fileData: FileData): Promise<Uint8Array> => {
     if (!fileData.rawFile || typeof fileData.rawFile.arrayBuffer !== 'function') {
-      throw new Error(`O ficheiro original de "${fileData.name}" não está disponível. Por favor, recarregue o ficheiro.`);
+      throw new Error(`Original binary file data is missing for ${fileData.name}. This typically happens after a page refresh because File objects are not persisted in localStorage.`);
     }
     const arrayBuffer = await fileData.rawFile.arrayBuffer();
     
@@ -3802,7 +3891,8 @@ export default function App() {
 
       // Convert canvas to image and add to new PDF
       const imageData = canvas.toDataURL('image/png');
-      const image = await outPdfDoc.embedPng(imageData);
+      const imageBytes = dataURLToUint8Array(imageData);
+      const image = await outPdfDoc.embedPng(imageBytes);
       
       const outPage = outPdfDoc.addPage([viewport.width / scale, viewport.height / scale]);
       outPage.drawImage(image, {
@@ -4429,6 +4519,7 @@ export default function App() {
                     }}
                     headerZones={headerZones}
                     footerZones={footerZones}
+                    onFileUpload={handleFileUpload}
                   />
                 </div>
               ) : (

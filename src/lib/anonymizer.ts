@@ -347,15 +347,15 @@ const PII_PATTERNS = {
   JUIZ: /\bJuiz(?:\(a\))?\s+(?:de\s+Direito\s+)?([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*)/g,
   AUTOR: /\bAutor(?:\(a\))?\s+([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*)/g,
   ADVOGADO: /\b(?:Advogado|Advogada|Mandatário|Mandatária)\s+([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*)/g,
-  // More aggressive name patterns for Portuguese - updated to handle internal spaces like "F erreira"
-  NOME_PT: /\b(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Autora|Réu|Ré|Arguido|Arguida|Denunciado|Denunciada|Participante|Mandatário|Advogado|Advogada|Recorrente|Recorrida|Recorrido)(?:,\s*|\s+)([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*)/g,
-  NOME_CAPS: /\b([A-ZÀ-ÖØ-Þ]{2,}(?:\s+(?:de|da|do|dos|das|e|DE|DA|DO|DOS|DAS|E)\s+[A-ZÀ-ÖØ-Þ]{2,}|\s+[A-ZÀ-ÖØ-Þ]{2,}){1,8})\b/g,
-  // Generic sequence of capitalized words (2 or more) - updated to handle internal spaces
-  NOME_GENERIC: /\b([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)){0,8})\b/g,
+  // More aggressive name patterns for Portuguese - updated to handle unicode boundaries
+  NOME_PT: /(?<![a-zA-ZÀ-ÿ0-9_])(?:Sr\.|Sra\.|Dr\.|Dra\.|Eng\.|Prof\.|Juiz|Desembargador|Colega|Autor|Autora|Réu|Ré|Arguido|Arguida|Denunciado|Denunciada|Participante|Mandatário|Advogado|Advogada|Recorrente|Recorrida|Recorrido)(?:,\s*|\s+)([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*)(?![a-zA-ZÀ-ÿ0-9_])/g,
+  NOME_CAPS: /(?<![a-zA-ZÀ-ÿ0-9_])([A-ZÀ-ÖØ-Þ]{2,}(?:\s+(?:de|da|do|dos|das|e|DE|DA|DO|DOS|DAS|E)\s+[A-ZÀ-ÖØ-Þ]{2,}|\s+[A-ZÀ-ÖØ-Þ]{2,}){1,8})(?![a-zA-ZÀ-ÿ0-9_])/g,
+  // Generic sequence of capitalized words (2 or more) - updated to handle unicode boundaries
+  NOME_GENERIC: /(?<![a-zA-ZÀ-ÿ0-9_])([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)){0,8})(?![a-zA-ZÀ-ÿ0-9_])/g,
   // Pattern for names with "e" in the middle (often two people)
-  NOME_AND: /\b([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*\s+e\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*)\b/g,
+  NOME_AND: /(?<![a-zA-ZÀ-ÿ0-9_])([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*\s+e\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.))*)(?![a-zA-ZÀ-ÿ0-9_])/g,
   // Legal context patterns
-  NOME_LEGAL: /\b(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à|recorrente|recorrida|recorrido)(?:,\s*|\s+)([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)){0,8})/g,
+  NOME_LEGAL: /(?<![a-zA-ZÀ-ÿ0-9_])(?:pelo|pela|por|contra|entre|com|de|do|da|a|ao|à|recorrente|recorrida|recorrido)(?:,\s*|\s+)([A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)|\s+[A-ZÀ-ÖØ-Þ](?:\s*[a-zà-öø-ÿ]+|\.)){0,8})(?![a-zA-ZÀ-ÿ0-9_])/g,
   COLETIVA: /\b(?:Associação|Fundação|Cooperativa|Sociedade|Empresa|Escola|Faculdade|Universidade|Instituto|Centro|Agrupamento|Sindicato|Banco|Seguradora|Companhia|Câmara|Junta|Assembleia|Governo|Estado|República|Ministério|Tribunal|Conselho|Direção|Serviço|Autoridade|Comissão|Unidade|Núcleo|Agência)\s+([A-ZÀ-ÿ][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+|\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+){1,8})\b|\b([A-ZÀ-ÿ][a-zÀ-ÿ]+(?:\s+(?:de|da|do|dos|das|e)\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+|\s+[A-ZÀ-ÿ][a-zÀ-ÿ]+){0,8})\s+(?:Lda\.?|Limitada|S\.A\.?|Sociedade\s+Anónima|Unipessoal|S\.?C\.?P\.?|S\.?P\.?Q\.?)\b/g,
 };
 
@@ -588,10 +588,19 @@ function calculateNameScore(
   if (allWords.some(w => commonAbbr.includes(w.toLowerCase()))) score -= 10;
 
   // 1. Positive triggers in contextBefore
-  const positiveTriggers = ['nome', 'requerente', 'réu', 'ré', 'autor', 'autora', 'mandatário', 'mandatária', 'dr.', 'dra.', 'sr.', 'sra.', 'exmo.', 'exma.'];
+  const positiveTriggers = [
+    'nome', 'requerente', 'réu', 'ré', 'autor', 'autora', 'mandatário', 'mandatária', 
+    'dr.', 'dra.', 'sr.', 'sra.', 'exmo.', 'exma.', 'trabalhador', 'trabalhadora', 
+    'trabalhadores', 'trabalhados', 'participante', 'funcionário', 'funcionária',
+    'identificado', 'identificada', 'apelante', 'apelado', 'condutor', 'condutora',
+    'proprietário', 'proprietária', 'vítima', 'ofendido', 'ofendida', 'assistente',
+    'testemunha', 'depoente', 'declarante', 'perito', 'perita'
+  ];
   const contextLower = contextBefore.toLowerCase();
-  if (positiveTriggers.some(t => contextLower.includes(t))) {
-    score += 4;
+  const contextAfterLower = contextAfter.toLowerCase();
+  
+  if (positiveTriggers.some(t => contextLower.includes(t) || contextAfterLower.includes(t))) {
+    score += 5; // Increased boost
   }
 
   // 2. Dictionary matches
@@ -626,7 +635,6 @@ function calculateNameScore(
 
   // 5. Address/Postal code context
   const addressTriggers = ['rua', 'avenida', 'praça', 'largo', 'estrada', 'caminho', 'beco', 'travessa', 'n.º', 'nº', 'código postal', 'cp'];
-  const contextAfterLower = contextAfter.toLowerCase();
   if (addressTriggers.some(t => contextLower.includes(t) || contextAfterLower.includes(t))) {
     score -= 4;
   }
@@ -648,7 +656,13 @@ function calculateNameScore(
   if (connectors.includes(allWords[0]?.toLowerCase())) score -= 5;
   if (connectors.includes(allWords[allWords.length - 1]?.toLowerCase())) score -= 5;
 
-  // 9. Lowercase start (if not a connector)
+  // 9. Conector bonus (e.g., "de", "da" in the middle of a name is a strong indicator)
+  const hasInternalConnector = allWords.slice(1, -1).some(w => connectors.includes(w.toLowerCase()));
+  if (hasInternalConnector && allWords.length >= 3) {
+    score += 4;
+  }
+
+  // 10. Lowercase start (if not a connector)
   if (trimmed[0] === trimmed[0].toLowerCase() && !connectors.includes(allWords[0]?.toLowerCase())) {
     score -= 6;
   }
@@ -1343,9 +1357,10 @@ export function anonymizeText(text: string, entities: PIIEntity[]): string {
       .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       .replace(/\s+/g, '\\s+');
     
-    // Use word boundaries to avoid partial matches
-    // We use a more flexible boundary check for names that might contain non-word chars
-    const regex = new RegExp(`\\b${escaped}\\b`, 'g');
+    // Use word boundaries that respect Unicode characters (Portuguese accents)
+    // The standard \b does not handle 'é', 'à', etc. correctly as word characters.
+    const wordChars = 'a-zA-ZÀ-ÿ0-9_';
+    const regex = new RegExp(`(?<![${wordChars}])${escaped}(?![${wordChars}])`, 'g');
     result = result.replace(regex, entity.pseudonym);
   });
 
